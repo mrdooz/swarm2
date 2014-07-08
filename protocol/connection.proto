@@ -1,0 +1,12 @@
+package connection;
+
+message ConnectionRequest
+{
+	
+}
+
+message ConnectionResponse
+{
+	optional uint32 connectionId = 1;	
+}
+

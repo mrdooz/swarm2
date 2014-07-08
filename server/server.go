@@ -1,8 +1,10 @@
 package main
 
 import (
-	//	"fmt"
+	"code.google.com/p/goprotobuf/proto"
+	"fmt"
 	"github.com/gorilla/websocket"
+	"github.com/mrdooz/swarm2/protocol"
 	"log"
 	"net/http"
 )
@@ -26,11 +28,17 @@ func handler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var conResp = connection.ConnectionResponse{}
+
 	for {
 		messageType, p, err := conn.ReadMessage()
 		if err != nil {
 			return
 		}
+
+		proto.Unmarshal(p, &conResp)
+		fmt.Println(conResp.GetConnectionId())
+
 		if err = conn.WriteMessage(messageType, p); err != nil {
 			return
 		}

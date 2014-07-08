@@ -1,0 +1,3 @@
+mkdir -p /Users/dooz/go/src/github.com/mrdooz/swarm2/protocol/
+protoc -I/Users/dooz/projects/protobuf/include -I. --go_out=$GOPATH/src/github.com/mrdooz/swarm2/protocol/ *.proto
+go install github.com/mrdooz/swarm2/protocol
