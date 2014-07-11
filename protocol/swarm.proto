@@ -1,0 +1,20 @@
+package swarm;
+
+message Header
+{
+	optional fixed32 method_hash 	= 1;
+	optional uint32 token 			= 2;
+	optional bool is_response 		= 3;
+	optional uint32 object_id		= 4;
+}
+
+message ConnectionRequest
+{
+	optional uint32 dummy = 1;
+}
+
+message ConnectionResponse
+{
+	optional uint32 connectionId = 1;	
+}
+
