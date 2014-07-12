@@ -100,7 +100,8 @@ function ConnectionManager()
     {
         var status = document.getElementById("connection-status");
         status.innerHTML = 'Connected';
-        this.sendProtoRequest('Connection', {});
+        this.sendProtoRequest('Connection', {'dummy' : 123}, 
+            function(x) { console.log(x); });
     }
 
     ConnectionManager.prototype.onClose = function(evt)
@@ -115,18 +116,26 @@ function ConnectionManager()
     ConnectionManager.prototype.onMessage = function(evt)
     {
         var data = evt.data;
-        // decode the header
-        var header = this.RpcHeader.decode(data);
 
-        if (header.is_response()) {
+        // get header length
+        var bb = ByteBuffer.wrap(data);
+        var headerSize = bb.readUint16();
+
+        var bbHeader = bb.copy(2, 2+headerSize);
+        var bbBody = bb.copy(2+headerSize, data.byteLength)
+
+        // decode the header
+        var header = this.RpcHeader.decode(bbHeader.toArrayBuffer());
+
+        if (header.is_response) {
 
             // lookup callback, deserialize and dispatch
-            var obj = this.tokenToCallback(header.token());
+            var obj = this.tokenToCallback[header.token];
             if (obj) {
                 // create a builder for the response object
                 var name = 'swarm.' + obj.methodName + 'Response';
                 var Msg = builder.build(name);
-                var proto = Msg.decode(data);
+                var proto = Msg.decode(bbBody.toArrayBuffer());
                 obj.callback(proto);
             }
             else

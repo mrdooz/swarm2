@@ -12,27 +12,94 @@ import (
 	"net/http"
 )
 
+type ProtoRequest struct {
+	header swarm.Header
+	body   []byte
+}
+
+type ProtoResponse struct {
+	methodHash uint32
+	body       []byte
+}
+
+type ClientConnection struct {
+	clientId uint32
+	conn     *websocket.Conn
+}
+
 var (
-	conn            websocket.Conn
-	clientId        uint32
-	nextToken       uint32
-	requestHandlers map[uint32]chan []byte = make(map[uint32]chan []byte)
+	nextToken        uint32
+	nextConnectionId uint32
+	nextClientId     uint32
+	requestChannels  map[uint32]chan ProtoRequest = make(map[uint32]chan ProtoRequest)
+	responseChannel  chan ProtoResponse           = make(chan ProtoResponse)
+	connectedClients map[uint32]ClientConnection  = make(map[uint32]ClientConnection)
 )
 
 func checkOrigin(r *http.Request) bool {
 	return true
 }
 
-func ConnectRequestHandler(c chan []byte) {
+func ConnectRequestHandler(c chan ProtoRequest) {
 	for {
-		buf := <-c
+		p := <-c
 		request := swarm.ConnectionRequest{}
-		if err := proto.Unmarshal(buf, &request); err != nil {
+		if err := proto.Unmarshal(p.body, &request); err != nil {
 			fmt.Println(err)
 		}
 		fmt.Printf("got stuff :) %d\n", request.GetDummy())
 
+		response := &swarm.ConnectionResponse{
+			ConnectionId: proto.Uint32(nextConnectionId),
+		}
+		nextConnectionId++
+
+		pp := ProtoResponse{}
+		pp.methodHash = p.header.GetMethodHash()
+		var err error
+		pp.body, err = proto.Marshal(response)
+		if err == nil {
+			responseChannel <- pp
+		} else {
+			fmt.Println(err)
+		}
 	}
+}
+
+func createProtoHeader(
+	methodHash uint32, token uint32, isResponse bool) (err error, headerSize uint16, headerBuf []byte) {
+
+	headerSize = 0
+	header := &swarm.Header{
+		MethodHash: proto.Uint32(methodHash),
+		Token:      proto.Uint32(token),
+		IsResponse: proto.Bool(isResponse),
+	}
+
+	headerBuf, err = proto.Marshal(header)
+	if err == nil {
+		headerSize = uint16(len(headerBuf))
+	}
+	return
+}
+
+func parseProtoHeader(buf []byte) (err error, headerSize int16, header swarm.Header) {
+
+	header = swarm.Header{}
+	headerSize = 0
+
+	// create reader, and parse header size
+	reader := bytes.NewReader(buf)
+	if err = binary.Read(reader, binary.BigEndian, &headerSize); err != nil {
+		return
+	}
+
+	// parse header
+	if err = proto.Unmarshal(buf[2:2+headerSize], &header); err != nil {
+		return
+	}
+
+	return
 }
 
 func handler(w http.ResponseWriter, r *http.Request) {
@@ -47,52 +114,64 @@ func handler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	for {
+	connectedClients[nextClientId] = ClientConnection{nextClientId, conn}
+	nextClientId++
+
+	// create channel for incoming messages, and spawn goroutine to process them
+	incoming := make(chan []byte)
+	go func(ch chan []byte) {
 		// wait for packet
 		_, buf, err := conn.ReadMessage()
 		if err != nil {
 			fmt.Print(err)
 			return
 		}
+		ch <- buf
+	}(incoming)
 
-		log.Printf("recv %d bytes\n", len(buf))
+	for {
 
-		// create reader, and parse header size
-		reader := bytes.NewReader(buf)
-		var headerSize int16
-		if err = binary.Read(reader, binary.BigEndian, &headerSize); err != nil {
-			fmt.Print(err)
-			return
-		}
+		// handle incoming and outgoing packets
+		select {
+		case buf := <-incoming:
+			fmt.Printf("recv %d bytes\n", len(buf))
 
-		// parse header
-		header := swarm.Header{}
-		if err = proto.Unmarshal(buf[2:2+headerSize], &header); err != nil {
-			fmt.Println(err)
-			return
-		}
+			// create reader, and parse header size
+			err, headerSize, header := parseProtoHeader(buf)
 
-		if !header.GetIsResponse() {
-			// look up a channel for the hash
-			ch := requestHandlers[header.GetMethodHash()]
-			ch <- buf[2+headerSize:]
-		}
+			if err != nil {
+				fmt.Println(err)
 
-		fmt.Printf("header size: %d, hash: %x, token: %d\n",
-			headerSize, header.GetMethodHash(), header.GetToken())
+			} else {
+				fmt.Printf("header size: %d, hash: %x, token: %d\n",
+					headerSize, header.GetMethodHash(), header.GetToken())
 
-		// find the reader for the response
-
-		// parse body
-		/*
-				body := swarm.ConnectionResponse{}
-				if err = proto.Unmarshal(buf[2+headerSize:], &body); err != nil {
-					fmt.Println(err)
-					return
+				if !header.GetIsResponse() {
+					// look up a channel for the hash
+					ch := requestChannels[header.GetMethodHash()]
+					ch <- ProtoRequest{header: header, body: buf[2+headerSize:]}
+				} else {
+					// packet is a request
 				}
-			fmt.Printf("connection id: %d\n", body.GetConnectionId())
-		*/
+			}
 
+		case req := <-responseChannel:
+			fmt.Println("sending response")
+
+			err, headerSize, headerBuf := createProtoHeader(req.methodHash, nextToken, true)
+			if err != nil {
+				fmt.Println("Error marshaling proto header")
+				continue
+			}
+			nextToken++
+
+			buf := new(bytes.Buffer)
+			binary.Write(buf, binary.BigEndian, &headerSize)
+			binary.Write(buf, binary.BigEndian, headerBuf)
+			binary.Write(buf, binary.BigEndian, req.body)
+
+			conn.WriteMessage(websocket.BinaryMessage, buf.Bytes())
+		}
 	}
 }
 
@@ -102,19 +181,17 @@ func hash(s string) uint32 {
 	return h.Sum32()
 }
 
+func initRequestHandlers() {
+	c := make(chan ProtoRequest)
+	requestChannels[hash("swarm.ConnectionRequest")] = c
+	go ConnectRequestHandler(c)
+}
+
 func main() {
 	log.Println("** server started")
-	c := make(chan []byte)
-	requestHandlers[hash("swarm.ConnectionRequest")] = c
-	go ConnectRequestHandler(c)
-
-	h := fnv.New32a()
-	h.Write([]byte("magnus"))
-	log.Print(h.Sum32())
-	//	log.Print(hash.New32a().)
+	initRequestHandlers()
 
 	http.HandleFunc("/", handler)
-	//	http.HandleFunc("/ws", serveWs)
 	if err := http.ListenAndServe("localhost:8080", nil); err != nil {
 		log.Fatal(err)
 	}
