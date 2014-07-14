@@ -5,32 +5,7 @@ var builder;
 var g_clientId;
 var g_connectionManager;
 
-function fnv32a(str)
-{
-    var FNV1_32A_INIT = 0x811c9dc5;
-    var hval = FNV1_32A_INIT;
-    for (var i = 0; i < str.length; ++i)
-    {
-        hval ^= str.charCodeAt(i);
-        hval += (hval << 1) + (hval << 4) + (hval << 7) + (hval << 8) + (hval << 24);
-    }
-    return hval >>> 0;
-}
-
-// concatenate a list of ArrayBuffers into a single buffer
-function concatBuffers(bufs) {
-    var len = 0;
-    _.each(bufs, function(e, i, l) { len += e.length; });
-
-    var tmp = new Uint8Array(len);
-    var ofs = 0;
-    _.each(bufs, function(e, i, l) {
-        tmp.set(new Uint8Array(e), ofs);
-        ofs += e.length;
-    });
-
-    return tmp.buffer;
-}
+var g_game;
 
 function ConnectionManager()
 {
@@ -38,6 +13,7 @@ function ConnectionManager()
     this.nextToken = 0;
     this.RpcHeader = builder.build("swarm.Header");
     this.tokenToCallback = {}
+    this.builderCache = {}
 
     ConnectionManager.prototype.connect = function(url)
     {
@@ -57,12 +33,25 @@ function ConnectionManager()
         this.websocket.send(a.toArrayBuffer());
     };
 
+    ConnectionManager.prototype.createBuilder = function(name) {
+
+        // check the cache
+        var o;
+        if (name in this.builderCache) {
+            o = this.builderCache[name];
+        } else {
+            o = builder.build(name);
+            this.builderCache[name] = o;
+        }
+        return o;
+    };
+
     ConnectionManager.prototype.sendProtoRequest = function(methodName, attr, cb)
     {
         var bb = new ByteBuffer();
         // build the header
         var name = 'swarm.' + methodName + 'Request';
-        var hash = fnv32a(name);
+        var hash = UTILS.fnv32a(name);
         var token = this.nextToken;
         this.nextToken = this.nextToken + 1;
 
@@ -72,7 +61,7 @@ function ConnectionManager()
             'is_response' : false});
         var headerBuf = header.toArrayBuffer();
 
-        var Msg = builder.build(name);
+        var Msg = this.createBuilder(name);
         var body = new Msg(attr);
         var bodyBuf = body.toArrayBuffer();
 
@@ -134,7 +123,7 @@ function ConnectionManager()
             if (obj) {
                 // create a builder for the response object
                 var name = 'swarm.' + obj.methodName + 'Response';
-                var Msg = builder.build(name);
+                var Msg = this.createBuilder(name);
                 var proto = Msg.decode(bbBody.toArrayBuffer());
                 obj.callback(proto);
             }
@@ -160,7 +149,124 @@ function createConnectionManager()
 }
 
 function init(url) {
-    builder = ProtoBuf.loadProtoFile("http://127.0.0.1:8000/protocol/swarm.proto");
+    builder = ProtoBuf.loadProtoFile("protocol/swarm.proto");
     g_connectionManager = new ConnectionManager();
     g_connectionManager.connect(url);
+
+    g_game = new Phaser.Game(800, 600, Phaser.AUTO, '', 
+        { preload: preload, create: create, update: update });
+}
+
+function preload() {
+
+    g_game.load.image('sky', 'assets/sky.png');
+    g_game.load.image('ground', 'assets/platform.png');
+    g_game.load.image('star', 'assets/star.png');
+    g_game.load.spritesheet('dude', 'assets/dude.png', 32, 48);
+}
+
+function create() {
+    //  We're going to be using physics, so enable the Arcade Physics system
+    g_game.physics.startSystem(Phaser.Physics.ARCADE);
+ 
+    //  A simple background for our game
+    g_game.add.sprite(0, 0, 'sky');
+ 
+    //  The platforms group contains the ground and the 2 ledges we can jump on
+    platforms = g_game.add.group();
+ 
+    //  We will enable physics for any object that is created in this group
+    platforms.enableBody = true;
+ 
+    // Here we create the ground.
+    var ground = platforms.create(0, g_game.world.height - 64, 'ground');
+ 
+    //  Scale it to fit the width of the game (the original sprite is 400x32 in size)
+    ground.scale.setTo(2, 2);
+ 
+    //  This stops it from falling away when you jump on it
+    ground.body.immovable = true;
+ 
+    //  Now let's create two ledges
+    var ledge = platforms.create(400, 400, 'ground');
+ 
+    ledge.body.immovable = true;
+ 
+    ledge = platforms.create(-150, 250, 'ground');
+ 
+    ledge.body.immovable = true;
+
+    // The player and its settings
+    player = g_game.add.sprite(32, g_game.world.height - 450, 'dude');
+ 
+    //  We need to enable physics on the player
+    g_game.physics.arcade.enable(player);
+ 
+    //  Player physics properties. Give the little guy a slight bounce.
+    player.body.bounce.y = 0.2;
+    player.body.gravity.y = 300;
+    player.body.collideWorldBounds = true;
+ 
+    //  Our two animations, walking left and right.
+    player.animations.add('left', [0, 1, 2, 3], 10, true);
+    player.animations.add('right', [5, 6, 7, 8], 10, true);
+
+    stars = g_game.add.group();
+
+    stars.enableBody = true;
+
+    //  Here we'll create 12 of them evenly spaced apart
+    for (var i = 0; i < 12; i++)
+    {
+        //  Create a star inside of the 'stars' group
+        var star = stars.create(i * 70, 0, 'star');
+
+        //  Let gravity do its thing
+        star.body.gravity.y = 20;
+
+        //  This just gives each star a slightly random bounce value
+        star.body.bounce.y = 0.7 + Math.random() * 0.2;
+    }
+
+    cursors = g_game.input.keyboard.createCursorKeys();
+}
+
+function update() {
+
+        //  Reset the players velocity (movement)
+    player.body.velocity.x *= 0.98;
+    player.body.acceleration.x = 0;
+
+    if (cursors.left.isDown)
+    {
+        //  Move to the left
+        player.body.acceleration.x = -150;
+
+        player.animations.play('left');
+    }
+    else if (cursors.right.isDown)
+    {
+        //  Move to the right
+        player.body.acceleration.x = 150;
+
+        player.animations.play('right');
+    }
+    else
+    {
+        //  Stand still
+        player.animations.stop();
+
+        player.frame = 4;
+    }
+    
+    //  Allow the player to jump if they are touching the ground.
+    if (cursors.up.isDown && player.body.touching.down)
+    {
+        player.body.acceleration.y = -350;
+    }
+
+    g_game.physics.arcade.collide(stars, platforms);
+
+    //  Collide the player and the stars with the platforms
+    g_game.physics.arcade.collide(player, platforms);
 }

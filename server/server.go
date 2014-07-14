@@ -12,6 +12,30 @@ import (
 	"net/http"
 )
 
+type PlayerId uint32
+type GameId uint32
+
+type Vector2 struct {
+	x float32
+	y float32
+}
+
+type PlayerState struct {
+	pos Vector2
+	vel Vector2
+	acc Vector2
+}
+
+type PlayerInfo struct {
+	id    PlayerId
+	state PlayerState
+}
+
+type GameState struct {
+	id      GameId
+	players []PlayerInfo
+}
+
 type ProtoRequest struct {
 	header swarm.Header
 	body   []byte
@@ -30,10 +54,13 @@ type ClientConnection struct {
 var (
 	nextToken        uint32
 	nextConnectionId uint32
-	nextClientId     uint32
 	requestChannels  map[uint32]chan ProtoRequest = make(map[uint32]chan ProtoRequest)
 	responseChannel  chan ProtoResponse           = make(chan ProtoResponse)
 	connectedClients map[uint32]ClientConnection  = make(map[uint32]ClientConnection)
+
+	nextClientId uint32
+	nextGameId   uint32
+	games        map[GameId]GameState = make(map[GameId]GameState)
 )
 
 func checkOrigin(r *http.Request) bool {
@@ -47,7 +74,7 @@ func ConnectRequestHandler(c chan ProtoRequest) {
 		if err := proto.Unmarshal(p.body, &request); err != nil {
 			fmt.Println(err)
 		}
-		fmt.Printf("got stuff :) %d\n", request.GetDummy())
+		fmt.Printf("got stuff :) %d\n", request.GetCreateGame())
 
 		response := &swarm.ConnectionResponse{
 			ConnectionId: proto.Uint32(nextConnectionId),

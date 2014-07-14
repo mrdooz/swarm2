@@ -10,11 +10,54 @@ message Header
 
 message ConnectionRequest
 {
-	optional uint32 dummy = 1;
+	optional bool create_game = 1;
 }
 
 message ConnectionResponse
 {
-	optional uint32 connectionId = 1;	
+	optional uint32 connection_id = 1;	
 }
 
+message PlayerId
+{
+	optional uint32 game_id = 1;
+	optional uint32 player_id = 2;
+}
+
+message EnterGame
+{
+	optional PlayerId id = 1;
+	repeated uint32 players = 2;
+}
+
+message PlayerUpdate
+{
+	enum Action {
+		LEFT = 0;
+		JOINED = 1;
+		DIED = 2;
+	}
+
+	optional PlayerId id = 1;
+	optional Action action = 2;
+}
+
+message Vector2
+{
+	optional float x = 1;
+	optional float y = 2;
+}
+
+message PlayerState
+{
+	optional uint32 id = 1;
+	optional Vector2 pos = 2;
+	optional Vector2 vel = 3;
+	optional Vector2 acc = 4;
+}
+
+message GameState
+{
+	optional uint32 id = 1;
+	repeated PlayerState players = 2;
+}
