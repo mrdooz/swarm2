@@ -13,7 +13,9 @@ function ConnectionManager()
     this.nextToken = 0;
     this.RpcHeader = builder.build("swarm.Header");
     this.tokenToCallback = {}
-    this.builderCache = {}
+    this.builderByName = {}
+    this.builderByHash = {}
+    this.methodHandlers = {}
 
     ConnectionManager.prototype.connect = function(url)
     {
@@ -37,13 +39,28 @@ function ConnectionManager()
 
         // check the cache
         var o;
-        if (name in this.builderCache) {
-            o = this.builderCache[name];
+        if (name in this.builderByName) {
+            o = this.builderByName[name];
         } else {
             o = builder.build(name);
-            this.builderCache[name] = o;
+            this.builderByName[name] = o;
+            this.builderByHash[UTILS.fnv32a(name)] = o;
         }
         return o;
+    };
+
+    ConnectionManager.prototype.addMethodHandler = function(methodName, cb)
+    {
+        var fullName = 'swarm.' + methodName;
+
+        // create builder, and add it to the cache
+        this.createBuilder(fullName);
+
+        // register callback
+        var methodHash = UTILS.fnv32a(fullName);
+        this.methodHandlers[methodHash] = cb;
+
+        console.log('Added handler for: ', fullName, ' - ', methodHash);
     };
 
     ConnectionManager.prototype.sendProtoRequest = function(methodName, attr, cb)
@@ -89,8 +106,13 @@ function ConnectionManager()
     {
         var status = document.getElementById("connection-status");
         status.innerHTML = 'Connected';
-        this.sendProtoRequest('Connection', {'dummy' : 123}, 
-            function(x) { console.log(x); });
+        this.sendProtoRequest('Connection', {'create_game' : true}, 
+            function(x) { 
+                console.log(x); 
+                g_game = new Phaser.Game(800, 600, Phaser.AUTO, '', 
+                    { preload: preload, create: create, update: update });
+
+            });
     }
 
     ConnectionManager.prototype.onClose = function(evt)
@@ -129,7 +151,24 @@ function ConnectionManager()
             }
             else
             {
-                console.log('no callback found for token: ', header.token());
+                console.log('no callback found for token: ', header.token);
+            }
+        }
+        else {
+            var methodHash = header.method_hash;
+            var cb = this.methodHandlers[methodHash];
+            if (cb) {
+                // find the builder, and decode the payload
+                var Msg = this.builderByHash[methodHash];
+                if (Msg) {
+                    var proto = Msg.decode(bbBody.toArrayBuffer());
+                    cb(proto);
+                } else {
+                    console.log('Builder not found for: ', header);
+                }
+
+            } else {
+                console.log('Unhandled method: ', header)
             }
         }
 
@@ -151,10 +190,8 @@ function createConnectionManager()
 function init(url) {
     builder = ProtoBuf.loadProtoFile("protocol/swarm.proto");
     g_connectionManager = new ConnectionManager();
+    g_connectionManager.addMethodHandler('EnterGame', function(p) { console.log(p); });
     g_connectionManager.connect(url);
-
-    g_game = new Phaser.Game(800, 600, Phaser.AUTO, '', 
-        { preload: preload, create: create, update: update });
 }
 
 function preload() {
