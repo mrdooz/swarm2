@@ -30,6 +30,10 @@ function ConnectionManager()
         this.websocket.onerror      = function(e) { that.onError(e); }
     };
 
+    ConnectionManager.prototype.disconnect = function() {
+        this.websocket.close();
+    };
+
     ConnectionManager.prototype.send = function(a)
     {
         this.websocket.send(a.toArrayBuffer());
@@ -63,43 +67,65 @@ function ConnectionManager()
         console.log('Added handler for: ', fullName, ' - ', methodHash);
     };
 
+    ConnectionManager.prototype.createArrayBuffer = function(header, name, attr) {
+
+        var headerBuf = header.toArrayBuffer();
+
+        var Msg = this.createBuilder(name);
+
+        var buf;
+        if (attr) {
+            var body = new Msg(attr);
+            var bodyBuf = body.toArrayBuffer();
+
+            var buf = new ByteBuffer(2 + headerBuf.byteLength + bodyBuf.byteLength);
+
+            // payload is: header_size + header + body
+            buf.writeInt16(headerBuf.byteLength);
+            buf.append(headerBuf);
+            buf.append(bodyBuf);
+        } else {
+            var buf = new ByteBuffer(2 + headerBuf.byteLength);
+
+            // payload is: header_size + header
+            buf.writeInt16(headerBuf.byteLength);
+            buf.append(headerBuf);
+        }
+
+        buf.reset()
+        return buf.toArrayBuffer();
+    }
+
     ConnectionManager.prototype.sendProtoRequest = function(methodName, attr, cb)
     {
         var bb = new ByteBuffer();
         // build the header
         var name = 'swarm.' + methodName + 'Request';
-        var hash = UTILS.fnv32a(name);
         var token = this.nextToken;
-        this.nextToken = this.nextToken + 1;
-
         var header = new this.RpcHeader({ 
-            'method_hash' : hash,
+            'method_hash' : UTILS.fnv32a(name),
             'token' : token,
             'is_response' : false});
-        var headerBuf = header.toArrayBuffer();
+        this.nextToken = token + 1;
 
-        var Msg = this.createBuilder(name);
-        var body = new Msg(attr);
-        var bodyBuf = body.toArrayBuffer();
-
-        var buf = new ByteBuffer(2 + headerBuf.byteLength + bodyBuf.byteLength);
-
-        // payload is: header_size + header + body
-        buf.writeInt16(headerBuf.byteLength);
-        buf.append(headerBuf);
-        buf.append(bodyBuf);
-
-        buf.reset()
-        this.websocket.send(buf.toArrayBuffer());
+        this.websocket.send(this.createArrayBuffer(header, name, attr));
 
         if (cb) {
             this.tokenToCallback[token] = { 'methodName' : methodName, 'callback' : cb };
         }
     }
 
-    ConnectionManager.prototype.close = function()
+    ConnectionManager.prototype.sendProtoResponse = function(methodName, token, attr)
     {
-        this.websocket = null;
+        var bb = new ByteBuffer();
+        // build the header
+        var name = 'swarm.' + methodName + 'Response';
+        var header = new this.RpcHeader({ 
+            'method_hash' : UTILS.fnv32a(name),
+            'token' : token,
+            'is_response' : true});
+
+        this.websocket.send(this.createArrayBuffer(header, name, attr));
     }
 
     ConnectionManager.prototype.onConnect = function(evt)
@@ -117,6 +143,7 @@ function ConnectionManager()
 
     ConnectionManager.prototype.onClose = function(evt)
     {
+        this.websocket = null;
     }
 
     ConnectionManager.prototype.onError = function(evt)
@@ -147,7 +174,7 @@ function ConnectionManager()
                 var name = 'swarm.' + obj.methodName + 'Response';
                 var Msg = this.createBuilder(name);
                 var proto = Msg.decode(bbBody.toArrayBuffer());
-                obj.callback(proto);
+                obj.callback(header, proto);
             }
             else
             {
@@ -162,7 +189,7 @@ function ConnectionManager()
                 var Msg = this.builderByHash[methodHash];
                 if (Msg) {
                     var proto = Msg.decode(bbBody.toArrayBuffer());
-                    cb(proto);
+                    cb(header, proto);
                 } else {
                     console.log('Builder not found for: ', header);
                 }
@@ -190,8 +217,17 @@ function createConnectionManager()
 function init(url) {
     builder = ProtoBuf.loadProtoFile("protocol/swarm.proto");
     g_connectionManager = new ConnectionManager();
-    g_connectionManager.addMethodHandler('EnterGame', function(p) { console.log(p); });
+    g_connectionManager.addMethodHandler('EnterGame',
+        function(header, body) { console.log(header, body); });    
+    g_connectionManager.addMethodHandler('PingRequest', 
+        function(header, body) { 
+            console.log('ping');
+            g_connectionManager.sendProtoResponse('Ping', header.token, {}) })
     g_connectionManager.connect(url);
+}
+
+function disconnect() {
+    g_connectionManager.disconnect();
 }
 
 function preload() {

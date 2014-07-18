@@ -9,6 +9,7 @@ import (
 	"hash/fnv"
 	"log"
 	"net/http"
+	"time"
 )
 
 type PlayerId uint32
@@ -41,7 +42,7 @@ type ProtoRequest struct {
 	body   []byte
 }
 
-type ProtoResponse struct {
+type ProtoMessage struct {
 	methodHash uint32
 	isResponse bool
 	body       []byte
@@ -55,10 +56,15 @@ type ClientConnection struct {
 var (
 	nextToken uint32
 
+	methodHashToName map[uint32]string = make(map[uint32]string)
+
 	// todo: split into per connection and per game
 	requestChannels  map[uint32]chan ProtoRequest = make(map[uint32]chan ProtoRequest)
-	responseChannel  chan ProtoResponse           = make(chan ProtoResponse)
+	outgoingChannel  chan ProtoMessage            = make(chan ProtoMessage)
 	connectedClients map[uint32]ClientConnection  = make(map[uint32]ClientConnection)
+
+	clientConnected    chan ClientConnection = make(chan ClientConnection)
+	clientDisconnected chan ClientConnection = make(chan ClientConnection)
 
 	nextClientId uint32
 	nextGameId   GameId
@@ -78,35 +84,28 @@ type GameManager struct {
 	players map[PlayerId]PlayerInfo
 }
 
+func (mgr *ConnectionManager) run() {
+
+}
+
 func checkOrigin(r *http.Request) bool {
 	return true
 }
 
-type Marshaler interface {
+type ProtobufMessage interface {
 	ProtoMessage()
 	Reset()
 	String() string
 }
 
-func sendProtoResponse(response Marshaler, methodHash uint32) {
+func sendProtoMessage(message ProtobufMessage, methodHash uint32, isResponse bool) {
 
-	pp := ProtoResponse{methodHash: methodHash, isResponse: true}
+	pp := ProtoMessage{methodHash: methodHash, isResponse: isResponse}
 	var err error
-	pp.body, err = proto.Marshal(response)
+	pp.body, err = proto.Marshal(message)
 	if err == nil {
-		responseChannel <- pp
-	} else {
-		log.Println(err)
-	}
-}
-
-func sendOutgoing(response Marshaler, methodHash uint32) {
-
-	pp := ProtoResponse{methodHash: methodHash, isResponse: false}
-	var err error
-	pp.body, err = proto.Marshal(response)
-	if err == nil {
-		responseChannel <- pp
+		log.Println("sendProtoMessage")
+		outgoingChannel <- pp
 	} else {
 		log.Println(err)
 	}
@@ -116,7 +115,7 @@ func sendEnterGame(playerId PlayerId, gameId GameId, players []PlayerInfo) {
 	e := swarm.EnterGame{
 		Id: &swarm.PlayerId{
 			GameId: proto.Uint32(uint32(gameId)), PlayerId: proto.Uint32(uint32(playerId))}}
-	sendOutgoing(&e, hash("swarm.EnterGame"))
+	sendProtoMessage(&e, makeHash("swarm.EnterGame"), false)
 }
 
 func connectionRequestHandler(c chan ProtoRequest) {
@@ -129,7 +128,7 @@ func connectionRequestHandler(c chan ProtoRequest) {
 		log.Println("Connection request")
 
 		response := &swarm.ConnectionResponse{}
-		sendProtoResponse(response, p.header.GetMethodHash())
+		sendProtoMessage(response, p.header.GetMethodHash(), true)
 
 		// check if the player wants to create a new game, or join an existing
 		if request.GetCreateGame() {
@@ -190,37 +189,48 @@ func parseProtoHeader(buf []byte) (err error, headerSize int16, header swarm.Hea
 	return
 }
 
-func handler(w http.ResponseWriter, r *http.Request) {
-
-	// upgrade the request to websocket
-	upgrader := &websocket.Upgrader{ReadBufferSize: 1024, WriteBufferSize: 1024}
-
-	upgrader.CheckOrigin = checkOrigin
-	conn, err := upgrader.Upgrade(w, r, nil)
-	if err != nil {
-		log.Println(err)
-		return
-	}
+func connectionProc(conn *websocket.Conn) {
 
 	connectedClients[nextClientId] = ClientConnection{nextClientId, conn}
 	nextClientId++
 
 	// create channel for incoming messages, and spawn goroutine to process them
+	disconnected := make(chan error)
 	incoming := make(chan []byte)
 	go func(ch chan []byte) {
 		// wait for packet
 		_, buf, err := conn.ReadMessage()
 		if err != nil {
-			log.Print(err)
+			disconnected <- err
+			log.Println("disconnected")
 			return
 		}
 		ch <- buf
 	}(incoming)
 
+	// create the ping response channel
+	pingResponseChannel := make(chan ProtoRequest)
+	requestChannels[makeHash("swarm.PingResponse")] = pingResponseChannel
+
 	for {
 
 		// handle incoming and outgoing packets
 		select {
+		case err := <-disconnected:
+			log.Print(err)
+			break
+
+		// send a ping every second to check for timeouts
+		case <-time.After(1 * time.Second):
+			log.Println("ping")
+			p := swarm.PingRequest{}
+			go sendProtoMessage(&p, makeHash("swarm.PingRequest"), false)
+			break
+
+		case <-pingResponseChannel:
+			log.Println("pong")
+			break
+
 		case buf := <-incoming:
 			log.Printf("recv %d bytes\n", len(buf))
 
@@ -243,8 +253,8 @@ func handler(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 
-		case req := <-responseChannel:
-			log.Println("sending response")
+		case req := <-outgoingChannel:
+			log.Println("sending outgoing")
 
 			err, headerSize, headerBuf := createProtoHeader(req.methodHash, nextToken, req.isResponse)
 			if err != nil {
@@ -258,9 +268,30 @@ func handler(w http.ResponseWriter, r *http.Request) {
 			binary.Write(buf, binary.BigEndian, headerBuf)
 			binary.Write(buf, binary.BigEndian, req.body)
 
-			conn.WriteMessage(websocket.BinaryMessage, buf.Bytes())
+			if err := conn.WriteMessage(websocket.BinaryMessage, buf.Bytes()); err != nil {
+				log.Println("disconnect")
+				log.Println(err)
+			}
 		}
 	}
+
+}
+
+// Handle websocket handshake, upgrade the connection, and start
+// a connection goroutine
+func websocketHandler(w http.ResponseWriter, r *http.Request) {
+
+	upgrader := &websocket.Upgrader{ReadBufferSize: 1024, WriteBufferSize: 1024}
+
+	upgrader.CheckOrigin = checkOrigin
+	conn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		log.Println(err)
+		return
+	}
+
+	// todo: update client connection struct etc
+	go connectionProc(conn)
 }
 
 func hash(s string) uint32 {
@@ -269,17 +300,23 @@ func hash(s string) uint32 {
 	return h.Sum32()
 }
 
+func makeHash(str string) uint32 {
+	h := hash(str)
+	methodHashToName[h] = str
+	return h
+}
+
 func initRequestHandlers() {
 	c := make(chan ProtoRequest)
-	requestChannels[hash("swarm.ConnectionRequest")] = c
+	requestChannels[makeHash("swarm.ConnectionRequest")] = c
 	go connectionRequestHandler(c)
 }
 
 func main() {
-	log.Println("** server started")
+	log.Println("server started")
 	initRequestHandlers()
 
-	http.HandleFunc("/", handler)
+	http.HandleFunc("/", websocketHandler)
 	if err := http.ListenAndServe("localhost:8080", nil); err != nil {
 		log.Fatal(err)
 	}

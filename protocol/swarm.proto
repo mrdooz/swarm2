@@ -8,6 +8,16 @@ message Header
 	optional uint32 object_id		= 4;
 }
 
+message PingRequest
+{
+	
+}
+
+message PingResponse
+{
+	
+}
+
 message ConnectionRequest
 {
 	optional bool create_game = 1;
