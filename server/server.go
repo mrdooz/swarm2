@@ -1,15 +1,15 @@
 package main
 
 import (
-	"bytes"
+	"./server_utils"
+	//	"bytes"
 	"code.google.com/p/goprotobuf/proto"
-	"encoding/binary"
+	//	"encoding/binary"
 	"github.com/gorilla/websocket"
 	"github.com/mrdooz/swarm2/protocol"
-	"hash/fnv"
 	"log"
 	"net/http"
-	"time"
+	//	"time"
 )
 
 type PlayerId uint32
@@ -49,44 +49,208 @@ type ProtoMessage struct {
 }
 
 type ClientConnection struct {
-	clientId uint32
-	conn     *websocket.Conn
-}
-
-var (
+	clientId  uint32
+	conn      *websocket.Conn
 	nextToken uint32
 
-	methodHashToName map[uint32]string = make(map[uint32]string)
-
-	// todo: split into per connection and per game
-	requestChannels  map[uint32]chan ProtoRequest = make(map[uint32]chan ProtoRequest)
-	outgoingChannel  chan ProtoMessage            = make(chan ProtoMessage)
-	connectedClients map[uint32]ClientConnection  = make(map[uint32]ClientConnection)
-
-	clientConnected    chan ClientConnection = make(chan ClientConnection)
-	clientDisconnected chan ClientConnection = make(chan ClientConnection)
-
-	nextClientId uint32
-	nextGameId   GameId
-	nextPlayerId PlayerId
-	games        map[GameId]GameState    = make(map[GameId]GameState)
-	players      map[PlayerId]PlayerInfo = make(map[PlayerId]PlayerInfo)
-)
-
-type ConnectionManager struct {
+	//	requestChannels  map[uint32]chan ProtoRequest = make(map[uint32]chan ProtoRequest)
+	//	outgoingChannel  chan ProtoMessage            = make(chan ProtoMessage)
 }
 
+/*
+func Handler(header swarm.Header, body []byte) {
+
+	// unmarshal the body
+	request := swarm.ConnectionRequest{}
+	if err := proto.Unmarshal(body, &request); err != nil {
+		log.Println(err)
+		return
+	}
+	log.Println("Connection request")
+
+	// check if the player wants to create a new game, or join an existing
+	if request.GetCreateGame() {
+
+		gameMgr.createGameRequest <- true
+		gameId := <-gameMgr.creatGameResponse
+
+		// player := PlayerInfo{id: nextPlayerId}
+		// game := GameState{id: nextGameId}
+
+		// game.players = append(game.players, player)
+		// players[nextPlayerId] = player
+
+		// sendEnterGame(nextPlayerId, nextGameId, game.players)
+
+		// nextPlayerId++
+		// nextGameId++
+
+	} else {
+
+	}
+
+	// send the response
+
+	for {
+		p := <-c
+		request := swarm.ConnectionRequest{}
+		if err := proto.Unmarshal(p.body, &request); err != nil {
+			log.Println(err)
+		}
+		log.Println("Connection request")
+
+		response := &swarm.ConnectionResponse{}
+		sendProtoMessage(response, p.header.GetMethodHash(), true)
+
+	}
+}
+*/
 type GameManager struct {
 	nextGameId   GameId
 	nextPlayerId PlayerId
 
 	games   map[GameId]GameState
 	players map[PlayerId]PlayerInfo
+
+	createGameRequest chan bool
+	creatGameResponse chan GameId
+}
+
+func (mgr *GameManager) run() {
+
+	mgr.createGameRequest = make(chan bool)
+	mgr.creatGameResponse = make(chan GameId)
+
+	select {
+	case <-mgr.createGameRequest:
+		mgr.creatGameResponse <- mgr.nextGameId
+		mgr.nextGameId++
+		break
+	}
+}
+
+var (
+	CONNECTION_REQUEST_METHOD_HASH  uint32 = server_utils.Hash("swarm.ConnectionRequest")
+	CONNECTION_RESPONSE_METHOD_HASH uint32 = server_utils.Hash("swarm.ConnectionResponse")
+	PING_REQUEST_METHOD_HASH        uint32 = server_utils.Hash("swarm.PingRequest")
+	PING_RESPONSE_METHOD_HASH       uint32 = server_utils.Hash("swarm.PingResponse")
+)
+
+func (client *ClientConnection) run() {
+
+	// make channel and goroutine to send data over the websocket
+	outgoing := make(chan []byte)
+	go func() {
+		for {
+			buf := <-outgoing
+			client.conn.WriteMessage(websocket.BinaryMessage, buf)
+		}
+	}()
+
+	conn := client.conn
+
+	for {
+		_, buf, err := conn.ReadMessage()
+		if err != nil {
+			connectionMgr.clientDisconnected <- client.clientId
+			log.Println("disconnected")
+			break
+		}
+
+		err, headerSize, header := server_utils.ParseProtoHeader(buf)
+		if err != nil {
+			log.Println("error parsing proto header")
+		}
+		log.Printf("recv: %d, %x", headerSize, header.GetMethodHash())
+
+		body := buf[2+headerSize:]
+		if header.GetIsResponse() {
+
+			switch header.GetMethodHash() {
+			case PING_RESPONSE_METHOD_HASH:
+				break
+			}
+
+		} else {
+
+			switch header.GetMethodHash() {
+			case CONNECTION_REQUEST_METHOD_HASH:
+				request := swarm.ConnectionRequest{}
+				if err := proto.Unmarshal(body, &request); err != nil {
+					log.Println(err)
+					return
+				}
+
+				if request.GetCreateGame() {
+
+				} else {
+					// join existing game
+				}
+
+				break
+
+			case PING_REQUEST_METHOD_HASH:
+				break
+
+			}
+
+		}
+
+	}
+
+}
+
+type ConnectionManager struct {
+	clientConnected    chan *websocket.Conn
+	clientDisconnected chan uint32
+
+	nextClientId uint32
+	clients      map[uint32]*ClientConnection
 }
 
 func (mgr *ConnectionManager) run() {
 
+	mgr.clientConnected = make(chan *websocket.Conn)
+	mgr.clientDisconnected = make(chan uint32)
+	mgr.clients = make(map[uint32]*ClientConnection)
+
+	select {
+	case conn := <-mgr.clientConnected:
+		// client connected, update structs and create the goroutine to
+		// serve it
+		clientId := mgr.nextClientId
+		client := &ClientConnection{clientId, conn, 0}
+
+		mgr.clients[clientId] = client
+		mgr.nextClientId++
+		go client.run()
+
+		break
+
+	case clientId := <-mgr.clientDisconnected:
+		log.Println(clientId)
+		break
+	}
+
 }
+
+var (
+	methodHashToName map[uint32]string = make(map[uint32]string)
+
+	// todo: split into per connection and per game
+	connectedClients map[uint32]ClientConnection = make(map[uint32]ClientConnection)
+
+	clientConnected    chan ClientConnection = make(chan ClientConnection)
+	clientDisconnected chan ClientConnection = make(chan ClientConnection)
+
+	nextGameId   GameId
+	nextPlayerId PlayerId
+	games        map[GameId]GameState    = make(map[GameId]GameState)
+	players      map[PlayerId]PlayerInfo = make(map[PlayerId]PlayerInfo)
+
+	connectionMgr ConnectionManager
+	gameMgr       GameManager
+)
 
 func checkOrigin(r *http.Request) bool {
 	return true
@@ -98,6 +262,7 @@ type ProtobufMessage interface {
 	String() string
 }
 
+/*
 func sendProtoMessage(message ProtobufMessage, methodHash uint32, isResponse bool) {
 
 	pp := ProtoMessage{methodHash: methodHash, isResponse: isResponse}
@@ -116,39 +281,6 @@ func sendEnterGame(playerId PlayerId, gameId GameId, players []PlayerInfo) {
 		Id: &swarm.PlayerId{
 			GameId: proto.Uint32(uint32(gameId)), PlayerId: proto.Uint32(uint32(playerId))}}
 	sendProtoMessage(&e, makeHash("swarm.EnterGame"), false)
-}
-
-func connectionRequestHandler(c chan ProtoRequest) {
-	for {
-		p := <-c
-		request := swarm.ConnectionRequest{}
-		if err := proto.Unmarshal(p.body, &request); err != nil {
-			log.Println(err)
-		}
-		log.Println("Connection request")
-
-		response := &swarm.ConnectionResponse{}
-		sendProtoMessage(response, p.header.GetMethodHash(), true)
-
-		// check if the player wants to create a new game, or join an existing
-		if request.GetCreateGame() {
-
-			player := PlayerInfo{id: nextPlayerId}
-			game := GameState{id: nextGameId}
-
-			game.players = append(game.players, player)
-			players[nextPlayerId] = player
-
-			sendEnterGame(nextPlayerId, nextGameId, game.players)
-
-			nextPlayerId++
-			nextGameId++
-
-		} else {
-
-		}
-
-	}
 }
 
 func createProtoHeader(
@@ -170,29 +302,7 @@ func createProtoHeader(
 	return
 }
 
-func parseProtoHeader(buf []byte) (err error, headerSize int16, header swarm.Header) {
-
-	header = swarm.Header{}
-	headerSize = 0
-
-	// create reader, and parse header size
-	reader := bytes.NewReader(buf)
-	if err = binary.Read(reader, binary.BigEndian, &headerSize); err != nil {
-		return
-	}
-
-	// parse header
-	if err = proto.Unmarshal(buf[2:2+headerSize], &header); err != nil {
-		return
-	}
-
-	return
-}
-
 func connectionProc(conn *websocket.Conn) {
-
-	connectedClients[nextClientId] = ClientConnection{nextClientId, conn}
-	nextClientId++
 
 	// create channel for incoming messages, and spawn goroutine to process them
 	disconnected := make(chan error)
@@ -276,7 +386,7 @@ func connectionProc(conn *websocket.Conn) {
 	}
 
 }
-
+*/
 // Handle websocket handshake, upgrade the connection, and start
 // a connection goroutine
 func websocketHandler(w http.ResponseWriter, r *http.Request) {
@@ -290,31 +400,26 @@ func websocketHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// todo: update client connection struct etc
-	go connectionProc(conn)
-}
+	connectionMgr.clientConnected <- conn
+	/*
+		// assign client id, and start goroutine
+		connectedClients[nextClientId] = ClientConnection{nextClientId, conn}
+		nextClientId++
 
-func hash(s string) uint32 {
-	h := fnv.New32a()
-	h.Write([]byte(s))
-	return h.Sum32()
+		// todo: update client connection struct etc
+		go connectionProc(conn)*/
 }
 
 func makeHash(str string) uint32 {
-	h := hash(str)
+	h := server_utils.Hash(str)
 	methodHashToName[h] = str
 	return h
 }
 
-func initRequestHandlers() {
-	c := make(chan ProtoRequest)
-	requestChannels[makeHash("swarm.ConnectionRequest")] = c
-	go connectionRequestHandler(c)
-}
-
 func main() {
 	log.Println("server started")
-	initRequestHandlers()
+	go gameMgr.run()
+	go connectionMgr.run()
 
 	http.HandleFunc("/", websocketHandler)
 	if err := http.ListenAndServe("localhost:8080", nil); err != nil {
