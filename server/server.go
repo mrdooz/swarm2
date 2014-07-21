@@ -1,10 +1,23 @@
+/*
+	hub start
+		- handle websocket upgrade requests
+		- start ClientConnection for each connection
+
+		ClientConnection
+			- go routine for reading
+				- unmarshal message, send processed data to run loop channel
+			- go routine for writing
+
+			- run loop selecting on channel
+*/
+
 package main
 
 import (
 	"./server_utils"
-	//	"bytes"
+	"bytes"
 	"code.google.com/p/goprotobuf/proto"
-	//	"encoding/binary"
+	"encoding/binary"
 	"github.com/gorilla/websocket"
 	"github.com/mrdooz/swarm2/protocol"
 	"log"
@@ -48,63 +61,22 @@ type ProtoMessage struct {
 	body       []byte
 }
 
+type GameService struct {
+	createGameResponse chan GameId
+}
+
 type ClientConnection struct {
-	clientId  uint32
-	conn      *websocket.Conn
-	nextToken uint32
-
-	//	requestChannels  map[uint32]chan ProtoRequest = make(map[uint32]chan ProtoRequest)
-	//	outgoingChannel  chan ProtoMessage            = make(chan ProtoMessage)
+	clientId    uint32
+	conn        *websocket.Conn
+	outgoing    chan []byte
+	gameService GameService
 }
 
-/*
-func Handler(header swarm.Header, body []byte) {
-
-	// unmarshal the body
-	request := swarm.ConnectionRequest{}
-	if err := proto.Unmarshal(body, &request); err != nil {
-		log.Println(err)
-		return
-	}
-	log.Println("Connection request")
-
-	// check if the player wants to create a new game, or join an existing
-	if request.GetCreateGame() {
-
-		gameMgr.createGameRequest <- true
-		gameId := <-gameMgr.creatGameResponse
-
-		// player := PlayerInfo{id: nextPlayerId}
-		// game := GameState{id: nextGameId}
-
-		// game.players = append(game.players, player)
-		// players[nextPlayerId] = player
-
-		// sendEnterGame(nextPlayerId, nextGameId, game.players)
-
-		// nextPlayerId++
-		// nextGameId++
-
-	} else {
-
-	}
-
-	// send the response
-
-	for {
-		p := <-c
-		request := swarm.ConnectionRequest{}
-		if err := proto.Unmarshal(p.body, &request); err != nil {
-			log.Println(err)
-		}
-		log.Println("Connection request")
-
-		response := &swarm.ConnectionResponse{}
-		sendProtoMessage(response, p.header.GetMethodHash(), true)
-
-	}
+type GameRequest struct {
+	response   *chan GameId
+	createGame bool
 }
-*/
+
 type GameManager struct {
 	nextGameId   GameId
 	nextPlayerId PlayerId
@@ -112,18 +84,16 @@ type GameManager struct {
 	games   map[GameId]GameState
 	players map[PlayerId]PlayerInfo
 
-	createGameRequest chan bool
-	creatGameResponse chan GameId
+	createGameRequest chan GameRequest
 }
 
 func (mgr *GameManager) run() {
 
-	mgr.createGameRequest = make(chan bool)
-	mgr.creatGameResponse = make(chan GameId)
+	mgr.createGameRequest = make(chan GameRequest)
 
 	select {
-	case <-mgr.createGameRequest:
-		mgr.creatGameResponse <- mgr.nextGameId
+	case req := <-mgr.createGameRequest:
+		*req.response <- mgr.nextGameId
 		mgr.nextGameId++
 		break
 	}
@@ -136,66 +106,144 @@ var (
 	PING_RESPONSE_METHOD_HASH       uint32 = server_utils.Hash("swarm.PingResponse")
 )
 
+func createProtoHeader(
+	methodHash uint32,
+	token uint32,
+	isResponse bool) (err error, headerSize uint16, headerBuf []byte) {
+
+	headerSize = 0
+	header := &swarm.Header{
+		MethodHash: proto.Uint32(methodHash),
+		Token:      proto.Uint32(token),
+		IsResponse: proto.Bool(isResponse),
+	}
+
+	headerBuf, err = proto.Marshal(header)
+	if err == nil {
+		headerSize = uint16(len(headerBuf))
+	}
+	return
+}
+
+func sendProtoMessage(
+	outgoing chan []byte,
+	message ProtobufMessage,
+	methodHash uint32,
+	token uint32,
+	isResponse bool) bool {
+
+	pp := ProtoMessage{methodHash: methodHash, isResponse: isResponse}
+	var err error
+	pp.body, err = proto.Marshal(message)
+	if err != nil {
+		log.Println(err)
+		return false
+	}
+
+	header := &swarm.Header{
+		MethodHash: proto.Uint32(methodHash),
+		Token:      proto.Uint32(token),
+		IsResponse: proto.Bool(isResponse),
+	}
+
+	headerBuf, err := proto.Marshal(header)
+	if err != nil {
+		log.Println(err)
+		return false
+	}
+
+	headerSize := uint16(len(headerBuf))
+
+	buf := new(bytes.Buffer)
+	binary.Write(buf, binary.BigEndian, &headerSize)
+	binary.Write(buf, binary.BigEndian, headerBuf)
+	binary.Write(buf, binary.BigEndian, pp.body)
+
+	outgoing <- buf.Bytes()
+
+	return true
+}
+
 func (client *ClientConnection) run() {
 
+	client.gameService = GameService{make(chan GameId)}
+	client.outgoing = make(chan []byte)
+
 	// make channel and goroutine to send data over the websocket
-	outgoing := make(chan []byte)
-	go func() {
+	go func(outgoing chan []byte) {
 		for {
 			buf := <-outgoing
 			client.conn.WriteMessage(websocket.BinaryMessage, buf)
 		}
-	}()
+	}(client.outgoing)
 
-	conn := client.conn
+	// reader goroutine
+	go func(client *ClientConnection) {
+
+		conn := client.conn
+
+		for {
+			_, buf, err := conn.ReadMessage()
+			if err != nil {
+				connectionMgr.clientDisconnected <- client.clientId
+				log.Println("disconnected")
+				break
+			}
+
+			err, headerSize, header := server_utils.ParseProtoHeader(buf)
+			if err != nil {
+				log.Println("error parsing proto header")
+			}
+			log.Printf("recv: %d, %x", headerSize, header.GetMethodHash())
+
+			body := buf[2+headerSize:]
+			if header.GetIsResponse() {
+
+				switch header.GetMethodHash() {
+				case PING_RESPONSE_METHOD_HASH:
+					break
+				}
+
+			} else {
+
+				switch header.GetMethodHash() {
+				case CONNECTION_REQUEST_METHOD_HASH:
+					request := swarm.ConnectionRequest{}
+					if err := proto.Unmarshal(body, &request); err != nil {
+						log.Println(err)
+						return
+					}
+
+					gameMgr.createGameRequest <- GameRequest{
+						&client.gameService.createGameResponse,
+						request.GetCreateGame()}
+					break
+
+				case PING_REQUEST_METHOD_HASH:
+					break
+
+				}
+			}
+		}
+
+	}(client)
+
+	var token uint32 = 0
+	outgoing := client.outgoing
 
 	for {
-		_, buf, err := conn.ReadMessage()
-		if err != nil {
-			connectionMgr.clientDisconnected <- client.clientId
-			log.Println("disconnected")
+		select {
+		case gameId := <-client.gameService.createGameResponse:
+			log.Printf("create game response: %d", gameId)
+			e := swarm.EnterGame{
+				Id: &swarm.PlayerId{
+					GameId: proto.Uint32(uint32(gameId)), PlayerId: proto.Uint32(0)}}
+
+			sendProtoMessage(outgoing, &e, makeHash("swarm.EnterGame"), token, false)
+			token++
+
 			break
 		}
-
-		err, headerSize, header := server_utils.ParseProtoHeader(buf)
-		if err != nil {
-			log.Println("error parsing proto header")
-		}
-		log.Printf("recv: %d, %x", headerSize, header.GetMethodHash())
-
-		body := buf[2+headerSize:]
-		if header.GetIsResponse() {
-
-			switch header.GetMethodHash() {
-			case PING_RESPONSE_METHOD_HASH:
-				break
-			}
-
-		} else {
-
-			switch header.GetMethodHash() {
-			case CONNECTION_REQUEST_METHOD_HASH:
-				request := swarm.ConnectionRequest{}
-				if err := proto.Unmarshal(body, &request); err != nil {
-					log.Println(err)
-					return
-				}
-
-				if request.GetCreateGame() {
-
-				} else {
-					// join existing game
-				}
-
-				break
-
-			case PING_REQUEST_METHOD_HASH:
-				break
-
-			}
-
-		}
-
 	}
 
 }
@@ -219,7 +267,7 @@ func (mgr *ConnectionManager) run() {
 		// client connected, update structs and create the goroutine to
 		// serve it
 		clientId := mgr.nextClientId
-		client := &ClientConnection{clientId, conn, 0}
+		client := &ClientConnection{clientId: clientId, conn: conn}
 
 		mgr.clients[clientId] = client
 		mgr.nextClientId++
@@ -262,131 +310,6 @@ type ProtobufMessage interface {
 	String() string
 }
 
-/*
-func sendProtoMessage(message ProtobufMessage, methodHash uint32, isResponse bool) {
-
-	pp := ProtoMessage{methodHash: methodHash, isResponse: isResponse}
-	var err error
-	pp.body, err = proto.Marshal(message)
-	if err == nil {
-		log.Println("sendProtoMessage")
-		outgoingChannel <- pp
-	} else {
-		log.Println(err)
-	}
-}
-
-func sendEnterGame(playerId PlayerId, gameId GameId, players []PlayerInfo) {
-	e := swarm.EnterGame{
-		Id: &swarm.PlayerId{
-			GameId: proto.Uint32(uint32(gameId)), PlayerId: proto.Uint32(uint32(playerId))}}
-	sendProtoMessage(&e, makeHash("swarm.EnterGame"), false)
-}
-
-func createProtoHeader(
-	methodHash uint32,
-	token uint32,
-	isResponse bool) (err error, headerSize uint16, headerBuf []byte) {
-
-	headerSize = 0
-	header := &swarm.Header{
-		MethodHash: proto.Uint32(methodHash),
-		Token:      proto.Uint32(token),
-		IsResponse: proto.Bool(isResponse),
-	}
-
-	headerBuf, err = proto.Marshal(header)
-	if err == nil {
-		headerSize = uint16(len(headerBuf))
-	}
-	return
-}
-
-func connectionProc(conn *websocket.Conn) {
-
-	// create channel for incoming messages, and spawn goroutine to process them
-	disconnected := make(chan error)
-	incoming := make(chan []byte)
-	go func(ch chan []byte) {
-		// wait for packet
-		_, buf, err := conn.ReadMessage()
-		if err != nil {
-			disconnected <- err
-			log.Println("disconnected")
-			return
-		}
-		ch <- buf
-	}(incoming)
-
-	// create the ping response channel
-	pingResponseChannel := make(chan ProtoRequest)
-	requestChannels[makeHash("swarm.PingResponse")] = pingResponseChannel
-
-	for {
-
-		// handle incoming and outgoing packets
-		select {
-		case err := <-disconnected:
-			log.Print(err)
-			break
-
-		// send a ping every second to check for timeouts
-		case <-time.After(1 * time.Second):
-			log.Println("ping")
-			p := swarm.PingRequest{}
-			go sendProtoMessage(&p, makeHash("swarm.PingRequest"), false)
-			break
-
-		case <-pingResponseChannel:
-			log.Println("pong")
-			break
-
-		case buf := <-incoming:
-			log.Printf("recv %d bytes\n", len(buf))
-
-			// create reader, and parse header size
-			err, headerSize, header := parseProtoHeader(buf)
-
-			if err != nil {
-				log.Println(err)
-
-			} else {
-				log.Printf("header size: %d, hash: %x, token: %d\n",
-					headerSize, header.GetMethodHash(), header.GetToken())
-
-				if !header.GetIsResponse() {
-					// look up a channel for the hash
-					ch := requestChannels[header.GetMethodHash()]
-					ch <- ProtoRequest{header: header, body: buf[2+headerSize:]}
-				} else {
-					// packet is a request
-				}
-			}
-
-		case req := <-outgoingChannel:
-			log.Println("sending outgoing")
-
-			err, headerSize, headerBuf := createProtoHeader(req.methodHash, nextToken, req.isResponse)
-			if err != nil {
-				log.Println("Error marshaling proto header")
-				continue
-			}
-			nextToken++
-
-			buf := new(bytes.Buffer)
-			binary.Write(buf, binary.BigEndian, &headerSize)
-			binary.Write(buf, binary.BigEndian, headerBuf)
-			binary.Write(buf, binary.BigEndian, req.body)
-
-			if err := conn.WriteMessage(websocket.BinaryMessage, buf.Bytes()); err != nil {
-				log.Println("disconnect")
-				log.Println(err)
-			}
-		}
-	}
-
-}
-*/
 // Handle websocket handshake, upgrade the connection, and start
 // a connection goroutine
 func websocketHandler(w http.ResponseWriter, r *http.Request) {
@@ -401,13 +324,6 @@ func websocketHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	connectionMgr.clientConnected <- conn
-	/*
-		// assign client id, and start goroutine
-		connectedClients[nextClientId] = ClientConnection{nextClientId, conn}
-		nextClientId++
-
-		// todo: update client connection struct etc
-		go connectionProc(conn)*/
 }
 
 func makeHash(str string) uint32 {
