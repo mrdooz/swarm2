@@ -1,14 +1,14 @@
 /*
-	hub start
+	Hub
 		- handle websocket upgrade requests
 		- start ClientConnection for each connection
 
-		ClientConnection
-			- go routine for reading
-				- unmarshal message, send processed data to run loop channel
-			- go routine for writing
+	ClientConnection
+		- go routine for reading
+			- unmarshal message, send processed data to run loop channel
+		- go routine for writing
 
-			- run loop selecting on channel
+		- run loop selecting on service channel
 */
 
 package main
@@ -23,6 +23,19 @@ import (
 	"log"
 	"net/http"
 	//	"time"
+)
+
+var (
+	CONNECTION_REQUEST_METHOD_HASH  uint32            = server_utils.Hash("swarm.ConnectionRequest")
+	CONNECTION_RESPONSE_METHOD_HASH uint32            = server_utils.Hash("swarm.ConnectionResponse")
+	PING_REQUEST_METHOD_HASH        uint32            = server_utils.Hash("swarm.PingRequest")
+	PING_RESPONSE_METHOD_HASH       uint32            = server_utils.Hash("swarm.PingResponse")
+	methodHashToName                map[uint32]string = make(map[uint32]string)
+)
+
+var (
+	connectionMgr ConnectionManager
+	gameMgr       GameManager
 )
 
 type PlayerId uint32
@@ -99,32 +112,6 @@ func (mgr *GameManager) run() {
 	}
 }
 
-var (
-	CONNECTION_REQUEST_METHOD_HASH  uint32 = server_utils.Hash("swarm.ConnectionRequest")
-	CONNECTION_RESPONSE_METHOD_HASH uint32 = server_utils.Hash("swarm.ConnectionResponse")
-	PING_REQUEST_METHOD_HASH        uint32 = server_utils.Hash("swarm.PingRequest")
-	PING_RESPONSE_METHOD_HASH       uint32 = server_utils.Hash("swarm.PingResponse")
-)
-
-func createProtoHeader(
-	methodHash uint32,
-	token uint32,
-	isResponse bool) (err error, headerSize uint16, headerBuf []byte) {
-
-	headerSize = 0
-	header := &swarm.Header{
-		MethodHash: proto.Uint32(methodHash),
-		Token:      proto.Uint32(token),
-		IsResponse: proto.Bool(isResponse),
-	}
-
-	headerBuf, err = proto.Marshal(header)
-	if err == nil {
-		headerSize = uint16(len(headerBuf))
-	}
-	return
-}
-
 func sendProtoMessage(
 	outgoing chan []byte,
 	message ProtobufMessage,
@@ -164,69 +151,80 @@ func sendProtoMessage(
 	return true
 }
 
+func (client *ClientConnection) writer() {
+
+	for {
+		// read from the outgoing channel, and send it on the websocket
+		buf := <-client.outgoing
+		client.conn.WriteMessage(websocket.BinaryMessage, buf)
+	}
+}
+
+func (client *ClientConnection) reader() {
+	conn := client.conn
+	outgoing := client.outgoing
+
+	for {
+		_, buf, err := conn.ReadMessage()
+		if err != nil {
+			connectionMgr.clientDisconnected <- client.clientId
+			log.Println("disconnected")
+			break
+		}
+
+		err, headerSize, header := server_utils.ParseProtoHeader(buf)
+		if err != nil {
+			log.Println("error parsing proto header")
+		}
+		log.Printf("recv: %d, %x", headerSize, header.GetMethodHash())
+
+		body := buf[2+headerSize:]
+		if header.GetIsResponse() {
+
+			switch header.GetMethodHash() {
+			case PING_RESPONSE_METHOD_HASH:
+				break
+			}
+
+		} else {
+
+			switch header.GetMethodHash() {
+			case CONNECTION_REQUEST_METHOD_HASH:
+				request := swarm.ConnectionRequest{}
+				if err := proto.Unmarshal(body, &request); err != nil {
+					log.Println(err)
+					return
+				}
+
+				response := swarm.ConnectionResponse{}
+				sendProtoMessage(
+					outgoing,
+					&response,
+					makeHash("swarm.ConnectionRespose"),
+					header.GetToken(),
+					true)
+
+				gameMgr.createGameRequest <- GameRequest{
+					&client.gameService.createGameResponse,
+					request.GetCreateGame()}
+				break
+
+			case PING_REQUEST_METHOD_HASH:
+				break
+
+			}
+		}
+	}
+
+}
+
 func (client *ClientConnection) run() {
 
 	client.gameService = GameService{make(chan GameId)}
 	client.outgoing = make(chan []byte)
 
-	// make channel and goroutine to send data over the websocket
-	go func(outgoing chan []byte) {
-		for {
-			buf := <-outgoing
-			client.conn.WriteMessage(websocket.BinaryMessage, buf)
-		}
-	}(client.outgoing)
-
-	// reader goroutine
-	go func(client *ClientConnection) {
-
-		conn := client.conn
-
-		for {
-			_, buf, err := conn.ReadMessage()
-			if err != nil {
-				connectionMgr.clientDisconnected <- client.clientId
-				log.Println("disconnected")
-				break
-			}
-
-			err, headerSize, header := server_utils.ParseProtoHeader(buf)
-			if err != nil {
-				log.Println("error parsing proto header")
-			}
-			log.Printf("recv: %d, %x", headerSize, header.GetMethodHash())
-
-			body := buf[2+headerSize:]
-			if header.GetIsResponse() {
-
-				switch header.GetMethodHash() {
-				case PING_RESPONSE_METHOD_HASH:
-					break
-				}
-
-			} else {
-
-				switch header.GetMethodHash() {
-				case CONNECTION_REQUEST_METHOD_HASH:
-					request := swarm.ConnectionRequest{}
-					if err := proto.Unmarshal(body, &request); err != nil {
-						log.Println(err)
-						return
-					}
-
-					gameMgr.createGameRequest <- GameRequest{
-						&client.gameService.createGameResponse,
-						request.GetCreateGame()}
-					break
-
-				case PING_REQUEST_METHOD_HASH:
-					break
-
-				}
-			}
-		}
-
-	}(client)
+	go client.writer()
+	go client.reader()
 
 	var token uint32 = 0
 	outgoing := client.outgoing
@@ -241,11 +239,9 @@ func (client *ClientConnection) run() {
 
 			sendProtoMessage(outgoing, &e, makeHash("swarm.EnterGame"), token, false)
 			token++
-
 			break
 		}
 	}
-
 }
 
 type ConnectionManager struct {
@@ -272,33 +268,13 @@ func (mgr *ConnectionManager) run() {
 		mgr.clients[clientId] = client
 		mgr.nextClientId++
 		go client.run()
-
 		break
 
 	case clientId := <-mgr.clientDisconnected:
 		log.Println(clientId)
 		break
 	}
-
 }
-
-var (
-	methodHashToName map[uint32]string = make(map[uint32]string)
-
-	// todo: split into per connection and per game
-	connectedClients map[uint32]ClientConnection = make(map[uint32]ClientConnection)
-
-	clientConnected    chan ClientConnection = make(chan ClientConnection)
-	clientDisconnected chan ClientConnection = make(chan ClientConnection)
-
-	nextGameId   GameId
-	nextPlayerId PlayerId
-	games        map[GameId]GameState    = make(map[GameId]GameState)
-	players      map[PlayerId]PlayerInfo = make(map[PlayerId]PlayerInfo)
-
-	connectionMgr ConnectionManager
-	gameMgr       GameManager
-)
 
 func checkOrigin(r *http.Request) bool {
 	return true
