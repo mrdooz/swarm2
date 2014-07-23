@@ -1,9 +1,12 @@
-var ProtoBuf = dcodeIO.ProtoBuf;
-var ByteBuffer = ProtoBuf.ByteBuffer;
-var builder;
+var ProtoBuf    = dcodeIO.ProtoBuf;
+var ByteBuffer  = ProtoBuf.ByteBuffer;
+var g_builder;
+var Vector2;
 
 var g_clientId;
 var g_connectionManager;
+var g_playerId;
+var g_gameId;
 
 var g_game;
 
@@ -11,7 +14,7 @@ function ConnectionManager()
 {
     this.websocket = null;
     this.nextToken = 0;
-    this.RpcHeader = builder.build("swarm.Header");
+    this.RpcHeader = g_builder.build("swarm.Header");
     this.tokenToCallback = {}
     this.builderByName = {}
     this.builderByHash = {}
@@ -46,7 +49,7 @@ function ConnectionManager()
         if (name in this.builderByName) {
             o = this.builderByName[name];
         } else {
-            o = builder.build(name);
+            o = g_builder.build(name);
             this.builderByName[name] = o;
             this.builderByHash[UTILS.fnv32a(name)] = o;
         }
@@ -96,6 +99,22 @@ function ConnectionManager()
         return buf.toArrayBuffer();
     }
 
+    // todo: unify these guys..
+    ConnectionManager.prototype.sendProto = function(methodName, attr)
+    {
+        var bb = new ByteBuffer();
+        // build the header
+        var name = 'swarm.' + methodName;
+        var token = this.nextToken;
+        var header = new this.RpcHeader({ 
+            'method_hash' : UTILS.fnv32a(name),
+            'token' : token,
+            'is_response' : false});
+        this.nextToken = token + 1;
+
+        this.websocket.send(this.createArrayBuffer(header, name, attr));
+    }
+
     ConnectionManager.prototype.sendProtoRequest = function(methodName, attr, cb)
     {
         var bb = new ByteBuffer();
@@ -135,7 +154,7 @@ function ConnectionManager()
         this.sendProtoRequest('Connection', {'create_game' : true}, 
             function(x) { 
                 console.log(x); 
-                g_game = new Phaser.Game(800, 600, Phaser.AUTO, '', 
+                g_game = new Phaser.Game(1800, 600, Phaser.AUTO, '', 
                     { preload: preload, create: create, update: update });
 
             });
@@ -204,7 +223,7 @@ function ConnectionManager()
 
 function createProtobuf(msg, attr)
 {
-    var Msg = builder.build(msg);
+    var Msg = g_builder.build(msg);
     return new Msg(attr);
 }
 
@@ -215,14 +234,20 @@ function createConnectionManager()
 }
 
 function init(url) {
-    builder = ProtoBuf.loadProtoFile("protocol/swarm.proto");
+    g_builder           = ProtoBuf.loadProtoFile("protocol/swarm.proto");
+    Vector2             = g_builder.build("swarm.Vector2");
     g_connectionManager = new ConnectionManager();
-    g_connectionManager.addMethodHandler('EnterGame',
-        function(header, body) { console.log(header, body); });    
-    g_connectionManager.addMethodHandler('PingRequest', 
-        function(header, body) { 
-            console.log('ping');
-            g_connectionManager.sendProtoResponse('Ping', header.token, {}) })
+
+    g_connectionManager.addMethodHandler('EnterGame', function(header, body) { 
+        console.log(header, body);
+        g_gameId = body.gameId;
+        g_playerId = body.playerId;
+    })
+
+    g_connectionManager.addMethodHandler('PingRequest', function(header, body) { 
+//        console.log(header, body); });    
+        g_connectionManager.sendProtoResponse('Ping', header.token, {})
+    })
     g_connectionManager.connect(url);
 }
 
@@ -342,4 +367,13 @@ function update() {
 
     //  Collide the player and the stars with the platforms
     g_game.physics.arcade.collide(player, platforms);
+
+    g_connectionManager.sendProto('PlayerState', {
+        'id' : g_playerId,
+        'acc' : new Vector2({'x': player.body.acceleration.x, 'y': player.body.acceleration.y}),
+        'vel' : new Vector2({'x': player.body.velocity.x, 'y': player.body.velocity.y}),
+        'pos' : new Vector2({'x': player.body.position.x, 'y': player.body.position.y}),
+        'time' : g_game.time.now,
+    });
+
 }

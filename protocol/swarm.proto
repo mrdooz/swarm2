@@ -27,16 +27,11 @@ message ConnectionResponse
 {
 }
 
-message PlayerId
-{
-	optional uint32 game_id = 1;
-	optional uint32 player_id = 2;
-}
-
 message EnterGame
 {
-	optional PlayerId id = 1;
-	repeated uint32 players = 2;
+	optional uint32 gameId = 1;
+	optional uint32 playerId = 2;
+	repeated uint32 players = 3;
 }
 
 message PlayerUpdate
@@ -47,7 +42,7 @@ message PlayerUpdate
 		DIED = 2;
 	}
 
-	optional PlayerId id = 1;
+	optional uint32 id = 1;
 	optional Action action = 2;
 }
 
@@ -63,10 +58,11 @@ message PlayerState
 	optional Vector2 pos = 2;
 	optional Vector2 vel = 3;
 	optional Vector2 acc = 4;
+	optional uint32 time = 5;
 }
 
 message GameState
 {
-	optional uint32 id = 1;
+	optional uint32 gameId = 1;
 	repeated PlayerState players = 2;
 }
