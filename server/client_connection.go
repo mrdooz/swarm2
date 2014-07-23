@@ -10,6 +10,16 @@ import (
 	"time"
 )
 
+var (
+	CONNECTION_REQUEST_METHOD_HASH  uint32 = Hash("swarm.ConnectionRequest")
+	CONNECTION_RESPONSE_METHOD_HASH uint32 = Hash("swarm.ConnectionResponse")
+	PING_REQUEST_METHOD_HASH        uint32 = Hash("swarm.PingRequest")
+	PING_RESPONSE_METHOD_HASH       uint32 = Hash("swarm.PingResponse")
+	PLAYER_STATE_METHOD_HASH        uint32 = Hash("swarm.PlayerState")
+
+	methodHashToName map[uint32]string = make(map[uint32]string)
+)
+
 type ClientConnection struct {
 	clientId     uint32
 	conn         *websocket.Conn
