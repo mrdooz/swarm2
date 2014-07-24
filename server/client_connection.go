@@ -55,7 +55,7 @@ func (client *ClientConnection) reader() {
 		if err != nil {
 			log.Println("error parsing proto header")
 		}
-		log.Printf("recv: %d, %x", headerSize, header.GetMethodHash())
+		//		log.Printf("recv: %d, %x", headerSize, header.GetMethodHash())
 
 		body := buf[2+headerSize:]
 		if header.GetIsResponse() {
@@ -103,6 +103,8 @@ func (client *ClientConnection) reader() {
 
 func (client *ClientConnection) run() {
 
+	log.Println("[CC] run")
+
 	client.gameService = GameService{
 		nil,
 		make(chan *CreateGameResponse),
@@ -118,8 +120,9 @@ func (client *ClientConnection) run() {
 		select {
 		case response := <-client.gameService.createGameResponse:
 			e := swarm.EnterGame{
-				GameId:   proto.Uint32(response.gameId),
-				PlayerId: proto.Uint32(response.playerId)}
+				GameId:   &response.gameId,
+				PlayerId: &response.playerId,
+				Players:  response.players}
 
 			client.sendProtoMessageRequest(&e, makeHash("swarm.EnterGame"))
 			break
@@ -139,8 +142,8 @@ func (client *ClientConnection) run() {
 
 	}
 
-	log.Println("[CC] Disconnected")
 	hub.clientDisconnected <- client.clientId
+	log.Println("[CC] exit")
 }
 
 func (client *ClientConnection) sendProtoMessageRequest(
@@ -177,9 +180,9 @@ func (client *ClientConnection) sendProtoMessageInner(
 	}
 
 	header := &swarm.Header{
-		MethodHash: proto.Uint32(methodHash),
-		Token:      proto.Uint32(token),
-		IsResponse: proto.Bool(isResponse),
+		MethodHash: &methodHash,
+		Token:      &token,
+		IsResponse: &isResponse,
 	}
 
 	headerBuf, err := proto.Marshal(header)

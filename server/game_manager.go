@@ -19,6 +19,7 @@ type GameManager struct {
 	gameService GameService
 }
 
+// TODO: consolidate these with playerstate/gamestate
 type Player struct {
 	chanState *chan *GameState
 	state     *PlayerState
@@ -29,36 +30,43 @@ type Game struct {
 	players []*Player
 }
 
-func (mgr *GameManager) addPlayerToGame(c *chan *GameState) *PlayerState {
+func (mgr *GameManager) addPlayerToGame(c *chan *GameState) (
+	playerState *PlayerState, gameState *GameState) {
 
 	// look for an existing game
-	var game *Game = nil
+	var game *Game
+
+	// TODO: for now, just use the first game we find
 	for _, g := range mgr.games {
 		game = g
+		gameState = g.state
 		break
 	}
 
 	if game == nil {
 		// create new game
 		id := mgr.nextGameId
-		game = &Game{state: &GameState{gameId: id}}
+		gameState = &GameState{gameId: id}
+		game = &Game{state: gameState}
 		mgr.games[mgr.nextGameId] = game
 		mgr.nextGameId++
 	}
 
-	// add player to game
+	// add the player to game, and the playestate to gamestate
 	playerId := mgr.nextPlayerId
-	state := &PlayerState{id: playerId}
-	game.players = append(game.players, &Player{c, state})
+	playerState = &PlayerState{id: playerId}
+	game.players = append(game.players, &Player{c, playerState})
+	gameState.players = append(gameState.players, playerState)
 	mgr.nextPlayerId++
 
 	mgr.playerIdToGame[playerId] = game
-	mgr.players[playerId] = state
+	mgr.players[playerId] = playerState
 
-	return state
+	return
 }
 
 func (mgr *GameManager) run() {
+	log.Println("[GM] run")
 
 	mgr.gameService = GameService{make(chan *CreateGameRequest), nil, nil}
 	mgr.playerState = make(chan swarm.PlayerState)
@@ -71,23 +79,23 @@ func (mgr *GameManager) run() {
 		case req := <-mgr.gameService.createGameRequest:
 
 			// save the game state channel for the player
-			p := mgr.addPlayerToGame(&req.gameState)
+			playerState, gameState := mgr.addPlayerToGame(&req.gameState)
+
+			var players []uint32
+			for _, p := range gameState.players {
+				players = append(players, p.id)
+			}
 
 			req.response <- &CreateGameResponse{
 				true,
-				p.id,
-				0,
-				[]uint32{}}
-			mgr.nextGameId++
-			mgr.nextPlayerId++
+				playerState.id,
+				gameState.gameId,
+				players}
 			break
 
 		case s := <-mgr.playerState:
-			log.Println("[GM] playerState")
-
 			// look up the player/game
 			playerId := s.GetId()
-			//		game := mgr.playerIdToGame[playerId]
 			player := mgr.players[playerId]
 
 			// update the player state
@@ -98,13 +106,13 @@ func (mgr *GameManager) run() {
 		case <-time.After(100 * time.Millisecond):
 			// loop over all the games, and notify players of the game state
 			for _, g := range mgr.games {
-				//			gameState := g.state.toProtocol()
 				for _, p := range g.players {
 					*p.chanState <- g.state
 				}
-
 			}
 			break
 		}
 	}
+	log.Println("[GM] exit")
+
 }

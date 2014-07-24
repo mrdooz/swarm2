@@ -15,6 +15,8 @@ type Hub struct {
 
 func (mgr *Hub) run() {
 
+	log.Println("[HUB] run")
+
 	mgr.clientConnected = make(chan *websocket.Conn)
 	mgr.clientDisconnected = make(chan uint32)
 	mgr.clients = make(map[uint32]*ClientConnection)
@@ -22,7 +24,7 @@ func (mgr *Hub) run() {
 	for {
 		select {
 		case conn := <-mgr.clientConnected:
-			log.Println("[CM] Client connected")
+			log.Println("[HUB] Client connected")
 			// client connected, update structs and create the goroutine to
 			// serve it
 			clientId := mgr.nextClientId
@@ -34,11 +36,11 @@ func (mgr *Hub) run() {
 			break
 
 		case clientId := <-mgr.clientDisconnected:
-			log.Println("[CM] Client disconnected")
+			log.Println("[HUB] Client disconnected")
 			delete(mgr.clients, clientId)
 			break
 		}
 	}
 
-	log.Println("[CM] Exit")
+	log.Println("[HUB] exit")
 }

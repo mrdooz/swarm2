@@ -20,5 +20,5 @@ type PlayerState struct {
 
 type GameState struct {
 	gameId  uint32
-	players []PlayerState
+	players []*PlayerState
 }

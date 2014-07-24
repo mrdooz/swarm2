@@ -60,7 +60,6 @@ func websocketHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
-	log.Println("server started")
 	go gameMgr.run()
 	go hub.run()
 

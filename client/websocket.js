@@ -10,6 +10,9 @@ var g_gameId;
 
 var g_game;
 
+var g_players = {}
+var g_localPlayerId;
+
 function ConnectionManager()
 {
     this.websocket = null;
@@ -230,7 +233,6 @@ function createProtobuf(msg, attr)
 function createConnectionManager()
 {
     g_connectionManager = new ConnectionManager();
-
 }
 
 function init(url) {
@@ -245,7 +247,7 @@ function init(url) {
     })
 
     g_connectionManager.addMethodHandler('GameState', function(header, body) { 
-        console.log(header, body);
+//        console.log(header, body);
     })
 
     g_connectionManager.addMethodHandler('PingRequest', function(header, body) { 
