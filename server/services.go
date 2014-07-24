@@ -1,15 +1,14 @@
 package main
 
 type GameService struct {
-	createGameRequest  chan CreateGameRequest
-	createGameResponse chan CreateGameResponse
-
-	gameState chan GameState
+	createGameRequest  chan *CreateGameRequest
+	createGameResponse chan *CreateGameResponse
+	gameState          chan *GameState
 }
 
 type CreateGameRequest struct {
-	response   *chan CreateGameResponse
-	gameState  *chan GameState
+	response   chan *CreateGameResponse
+	gameState  chan *GameState
 	createGame bool
 }
 

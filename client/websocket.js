@@ -244,6 +244,10 @@ function init(url) {
         g_playerId = body.playerId;
     })
 
+    g_connectionManager.addMethodHandler('GameState', function(header, body) { 
+        console.log(header, body);
+    })
+
     g_connectionManager.addMethodHandler('PingRequest', function(header, body) { 
 //        console.log(header, body); });    
         g_connectionManager.sendProtoResponse('Ping', header.token, {})

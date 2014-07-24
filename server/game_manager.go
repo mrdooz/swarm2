@@ -2,6 +2,8 @@ package main
 
 import (
 	"github.com/mrdooz/swarm2/protocol"
+	"log"
+	"time"
 )
 
 type GameManager struct {
@@ -18,7 +20,7 @@ type GameManager struct {
 }
 
 type Player struct {
-	chanState *chan GameState
+	chanState *chan *GameState
 	state     *PlayerState
 }
 
@@ -27,7 +29,7 @@ type Game struct {
 	players []*Player
 }
 
-func (mgr *GameManager) addPlayerToGame(c *chan GameState) *PlayerState {
+func (mgr *GameManager) addPlayerToGame(c *chan *GameState) *PlayerState {
 
 	// look for an existing game
 	var game *Game = nil
@@ -58,39 +60,51 @@ func (mgr *GameManager) addPlayerToGame(c *chan GameState) *PlayerState {
 
 func (mgr *GameManager) run() {
 
-	mgr.gameService = GameService{make(chan CreateGameRequest), nil, nil}
+	mgr.gameService = GameService{make(chan *CreateGameRequest), nil, nil}
 	mgr.playerState = make(chan swarm.PlayerState)
+	mgr.games = make(map[uint32]*Game)
+	mgr.players = make(map[uint32]*PlayerState)
+	mgr.playerIdToGame = make(map[uint32]*Game)
 
-	select {
-	case req := <-mgr.gameService.createGameRequest:
+	for {
+		select {
+		case req := <-mgr.gameService.createGameRequest:
 
-		// save the game state channel for the player
-		p := mgr.addPlayerToGame(req.gameState)
+			// save the game state channel for the player
+			p := mgr.addPlayerToGame(&req.gameState)
 
-		*req.response <- CreateGameResponse{
-			true,
-			p.id,
-			0,
-			[]uint32{}}
-		mgr.nextGameId++
-		mgr.nextPlayerId++
-		break
+			req.response <- &CreateGameResponse{
+				true,
+				p.id,
+				0,
+				[]uint32{}}
+			mgr.nextGameId++
+			mgr.nextPlayerId++
+			break
 
-	case s := <-mgr.playerState:
-		// look up the player/game
-		playerId := s.GetId()
-		game := mgr.playerIdToGame[playerId]
-		player := mgr.players[playerId]
+		case s := <-mgr.playerState:
+			log.Println("[GM] playerState")
 
-		// update the player state
-		player.fromProtocol(&s)
+			// look up the player/game
+			playerId := s.GetId()
+			//		game := mgr.playerIdToGame[playerId]
+			player := mgr.players[playerId]
 
-		break
+			// update the player state
+			player.fromProtocol(&s)
 
-		// case <-time.After(100 * time.Millisecond):
-		// 	for _, g := range mgr.games {
+			break
 
-		// 	}
-		// 	break
+		case <-time.After(100 * time.Millisecond):
+			// loop over all the games, and notify players of the game state
+			for _, g := range mgr.games {
+				//			gameState := g.state.toProtocol()
+				for _, p := range g.players {
+					*p.chanState <- g.state
+				}
+
+			}
+			break
+		}
 	}
 }

@@ -49,8 +49,8 @@ func (v *Vector2) fromProtocol(p *swarm.Vector2) {
 	v.y = p.GetY()
 }
 
-func (v *Vector2) toProtocol(p *swarm.Vector2) {
-	p = &swarm.Vector2{X: &v.x, Y: &v.y}
+func (v *Vector2) toProtocol() *swarm.Vector2 {
+	return &swarm.Vector2{X: &v.x, Y: &v.y}
 }
 
 func (state *PlayerState) fromProtocol(p *swarm.PlayerState) {
@@ -60,20 +60,21 @@ func (state *PlayerState) fromProtocol(p *swarm.PlayerState) {
 	state.pos.fromProtocol(p.GetPos())
 }
 
-func (state *PlayerState) toProtocol(p *swarm.PlayerState) {
-	p = &swarm.PlayerState{Id: &state.id}
-	state.acc.toProtocol(p.GetAcc())
-	state.vel.toProtocol(p.GetVel())
-	state.pos.toProtocol(p.GetPos())
+func (state *PlayerState) toProtocol() *swarm.PlayerState {
+	p := &swarm.PlayerState{
+		Id:  &state.id,
+		Acc: state.acc.toProtocol(),
+		Vel: state.vel.toProtocol(),
+		Pos: state.pos.toProtocol()}
+	return p
 }
 
-func (state *GameState) toProtocol(p *swarm.GameState) {
+func (state *GameState) toProtocol() *swarm.GameState {
 
-	p = &swarm.GameState{GameId: proto.Uint32(state.gameId)}
+	p := &swarm.GameState{GameId: proto.Uint32(state.gameId)}
 
 	for _, player := range state.players {
-		s := &swarm.PlayerState{}
-		player.toProtocol(s)
-		p.Players = append(p.Players, s)
+		p.Players = append(p.Players, player.toProtocol())
 	}
+	return p
 }

@@ -22,6 +22,7 @@ var (
 
 type ClientConnection struct {
 	clientId     uint32
+	token        uint32
 	conn         *websocket.Conn
 	outgoing     chan []byte
 	disconnected chan bool
@@ -41,7 +42,6 @@ func (client *ClientConnection) writer() {
 
 func (client *ClientConnection) reader() {
 	conn := client.conn
-	outgoing := client.outgoing
 
 	for {
 		_, buf, err := conn.ReadMessage()
@@ -76,16 +76,14 @@ func (client *ClientConnection) reader() {
 				}
 
 				response := swarm.ConnectionResponse{}
-				sendProtoMessage(
-					outgoing,
+				client.sendProtoMessageResponse(
 					&response,
-					makeHash("swarm.ConnectionRespose"),
-					header.GetToken(),
-					true)
+					makeHash("swarm.ConnectionResponse"),
+					header.GetToken())
 
-				gameMgr.gameService.createGameRequest <- CreateGameRequest{
-					&client.gameService.createGameResponse,
-					nil,
+				gameMgr.gameService.createGameRequest <- &CreateGameRequest{
+					client.gameService.createGameResponse,
+					client.gameService.gameState,
 					request.GetCreateGame()}
 				break
 
@@ -94,6 +92,7 @@ func (client *ClientConnection) reader() {
 				if err := proto.Unmarshal(body, &state); err != nil {
 					log.Println(err)
 				} else {
+					gameMgr.playerState <- state
 				}
 				break
 			}
@@ -106,16 +105,13 @@ func (client *ClientConnection) run() {
 
 	client.gameService = GameService{
 		nil,
-		make(chan CreateGameResponse),
-		make(chan GameState)}
+		make(chan *CreateGameResponse),
+		make(chan *GameState)}
 	client.outgoing = make(chan []byte)
 	client.disconnected = make(chan bool)
 
 	go client.writer()
 	go client.reader()
-
-	var token uint32 = 0
-	outgoing := client.outgoing
 
 	done := false
 	for !done {
@@ -125,13 +121,15 @@ func (client *ClientConnection) run() {
 				GameId:   proto.Uint32(response.gameId),
 				PlayerId: proto.Uint32(response.playerId)}
 
-			sendProtoMessage(outgoing, &e, makeHash("swarm.EnterGame"), token, false)
-			token++
+			client.sendProtoMessageRequest(&e, makeHash("swarm.EnterGame"))
 			break
 
 		case <-time.After(10 * time.Second):
-			sendProtoMessage(outgoing, &swarm.PingRequest{}, makeHash("swarm.PingRequest"), token, false)
-			token++
+			client.sendProtoMessageRequest(&swarm.PingRequest{}, makeHash("swarm.PingRequest"))
+			break
+
+		case gameState := <-client.gameService.gameState:
+			client.sendProtoMessageRequest(gameState.toProtocol(), makeHash("swarm.GameState"))
 			break
 
 		case <-client.disconnected:
@@ -145,8 +143,26 @@ func (client *ClientConnection) run() {
 	hub.clientDisconnected <- client.clientId
 }
 
-func sendProtoMessage(
-	outgoing chan []byte,
+func (client *ClientConnection) sendProtoMessageRequest(
+	message ProtobufMessage,
+	methodHash uint32) bool {
+
+	res := client.sendProtoMessageInner(message, methodHash, client.token, false)
+	if res {
+		client.token++
+	}
+	return true
+}
+
+func (client *ClientConnection) sendProtoMessageResponse(
+	message ProtobufMessage,
+	methodHash uint32,
+	token uint32) bool {
+
+	return client.sendProtoMessageInner(message, methodHash, token, true)
+}
+
+func (client *ClientConnection) sendProtoMessageInner(
 	message ProtobufMessage,
 	methodHash uint32,
 	token uint32,
@@ -179,7 +195,7 @@ func sendProtoMessage(
 	binary.Write(buf, binary.BigEndian, headerBuf)
 	binary.Write(buf, binary.BigEndian, pp.body)
 
-	outgoing <- buf.Bytes()
+	client.outgoing <- buf.Bytes()
 
 	return true
 }
