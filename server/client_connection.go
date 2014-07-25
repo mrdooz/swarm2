@@ -23,6 +23,8 @@ var (
 type ClientConnection struct {
 	clientId     uint32
 	token        uint32
+	playerId     uint32
+	gameId       uint32
 	conn         *websocket.Conn
 	outgoing     chan []byte
 	disconnected chan bool
@@ -119,6 +121,8 @@ func (client *ClientConnection) run() {
 	for !done {
 		select {
 		case response := <-client.gameService.createGameResponse:
+			client.playerId = response.playerId
+			client.gameId = response.gameId
 			e := swarm.EnterGame{
 				GameId:   &response.gameId,
 				PlayerId: &response.playerId,
@@ -136,6 +140,7 @@ func (client *ClientConnection) run() {
 			break
 
 		case <-client.disconnected:
+			gameMgr.playerLeft <- client.playerId
 			done = true
 			break
 		}

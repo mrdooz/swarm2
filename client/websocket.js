@@ -5,13 +5,12 @@ var Vector2;
 
 var g_clientId;
 var g_connectionManager;
-var g_playerId;
-var g_gameId;
 
 var g_game;
 
 var g_players = {}
-var g_localPlayerId;
+var g_playerId = -1
+var g_gameId;
 
 function ConnectionManager()
 {
@@ -114,7 +113,6 @@ function ConnectionManager()
             'token' : token,
             'is_response' : false});
         this.nextToken = token + 1;
-
         this.websocket.send(this.createArrayBuffer(header, name, attr));
     }
 
@@ -157,9 +155,6 @@ function ConnectionManager()
         this.sendProtoRequest('Connection', {'create_game' : true}, 
             function(x) { 
                 console.log(x); 
-                g_game = new Phaser.Game(1800, 600, Phaser.AUTO, '', 
-                    { preload: preload, create: create, update: update });
-
             });
     }
 
@@ -242,12 +237,35 @@ function init(url) {
 
     g_connectionManager.addMethodHandler('EnterGame', function(header, body) { 
         console.log(header, body);
-        g_gameId = body.gameId;
-        g_playerId = body.playerId;
+        g_game = new Phaser.Game(1800, 600, Phaser.AUTO, '', { 
+                    preload: preload,
+                    create: function() { 
+                        g_gameId = body.gameId;
+                        g_playerId = body.playerId; 
+                        create(body.players);
+                    },
+                    update: update });
     })
 
     g_connectionManager.addMethodHandler('GameState', function(header, body) { 
-//        console.log(header, body);
+        _.each(body.players, function(v, k, l) {
+
+            if (!(v.id in g_players)) {
+                createPlayer(v.id, false);
+            }
+
+            if (v.id != g_playerId) {
+                player = g_players[v.id];
+                player.acceleration.x = v.acc.x;
+                player.acceleration.y = v.acc.y;
+
+                player.velocity.x = v.vel.x;
+                player.velocity.y = v.vel.y;
+
+                player.position.x = v.pos.x;
+                player.position.y = v.pos.y;
+            }
+        })
     })
 
     g_connectionManager.addMethodHandler('PingRequest', function(header, body) { 
@@ -269,7 +287,26 @@ function preload() {
     g_game.load.spritesheet('dude', 'assets/dude.png', 32, 48);
 }
 
-function create() {
+function createPlayer(id, local) {
+    // The player and its settings
+    var player = g_game.add.sprite(32, g_game.world.height - 450, 'dude');
+ 
+    //  We need to enable physics on the player
+    g_game.physics.arcade.enable(player);
+ 
+    //  Player physics properties. Give the little guy a slight bounce.
+    player.body.bounce.y = 0.2;
+    player.body.gravity.y = 300;
+    player.body.collideWorldBounds = true;
+ 
+    //  Our two animations, walking left and right.
+    player.animations.add('left', [0, 1, 2, 3], 10, true);
+    player.animations.add('right', [5, 6, 7, 8], 10, true);
+
+    g_players[id] = player;
+}
+
+function create(players) {
     //  We're going to be using physics, so enable the Arcade Physics system
     g_game.physics.startSystem(Phaser.Physics.ARCADE);
  
@@ -300,20 +337,26 @@ function create() {
  
     ledge.body.immovable = true;
 
+    // create a sprite for each players
+    _.each(players, function(v, k, l) {
+        createPlayer(k, v == g_playerId);
+    })
+
+
     // The player and its settings
-    player = g_game.add.sprite(32, g_game.world.height - 450, 'dude');
+    // player = g_game.add.sprite(32, g_game.world.height - 450, 'dude');
  
-    //  We need to enable physics on the player
-    g_game.physics.arcade.enable(player);
+    // //  We need to enable physics on the player
+    // g_game.physics.arcade.enable(player);
  
-    //  Player physics properties. Give the little guy a slight bounce.
-    player.body.bounce.y = 0.2;
-    player.body.gravity.y = 300;
-    player.body.collideWorldBounds = true;
+    // //  Player physics properties. Give the little guy a slight bounce.
+    // player.body.bounce.y = 0.2;
+    // player.body.gravity.y = 300;
+    // player.body.collideWorldBounds = true;
  
-    //  Our two animations, walking left and right.
-    player.animations.add('left', [0, 1, 2, 3], 10, true);
-    player.animations.add('right', [5, 6, 7, 8], 10, true);
+    // //  Our two animations, walking left and right.
+    // player.animations.add('left', [0, 1, 2, 3], 10, true);
+    // player.animations.add('right', [5, 6, 7, 8], 10, true);
 
     stars = g_game.add.group();
 
@@ -337,49 +380,50 @@ function create() {
 
 function update() {
 
+    if (g_playerId != -1 && (g_playerId in g_players)) {
+        // update the local player with keyboard input
+        var player = g_players[g_playerId];
+
         //  Reset the players velocity (movement)
-    player.body.velocity.x *= 0.98;
-    player.body.acceleration.x = 0;
+        player.body.velocity.x *= 0.98;
+        player.body.acceleration.x = 0;
 
-    if (cursors.left.isDown)
-    {
-        //  Move to the left
-        player.body.acceleration.x = -150;
+        if (cursors.left.isDown)
+        {
+            //  Move to the left
+            player.body.acceleration.x = -150;
+            player.animations.play('left');
+        }
+        else if (cursors.right.isDown)
+        {
+            //  Move to the right
+            player.body.acceleration.x = 150;
+            player.animations.play('right');
+        }
+        else
+        {
+            //  Stand still
+            player.animations.stop();
+            player.frame = 4;
+        }
+        
+        //  Allow the player to jump if they are touching the ground.
+        if (cursors.up.isDown && player.body.touching.down)
+        {
+            player.body.acceleration.y = -350;
+        }
 
-        player.animations.play('left');
-    }
-    else if (cursors.right.isDown)
-    {
-        //  Move to the right
-        player.body.acceleration.x = 150;
+        //  Collide the player and the stars with the platforms
+        g_game.physics.arcade.collide(player, platforms);
 
-        player.animations.play('right');
-    }
-    else
-    {
-        //  Stand still
-        player.animations.stop();
-
-        player.frame = 4;
-    }
+        g_connectionManager.sendProto('PlayerState', {
+            'id' : g_playerId,
+            'acc' : new Vector2({'x': player.body.acceleration.x, 'y': player.body.acceleration.y}),
+            'vel' : new Vector2({'x': player.body.velocity.x, 'y': player.body.velocity.y}),
+            'pos' : new Vector2({'x': player.body.position.x, 'y': player.body.position.y}),
+            'time' : g_game.time.now,
+        });
+    }   
     
-    //  Allow the player to jump if they are touching the ground.
-    if (cursors.up.isDown && player.body.touching.down)
-    {
-        player.body.acceleration.y = -350;
-    }
-
     g_game.physics.arcade.collide(stars, platforms);
-
-    //  Collide the player and the stars with the platforms
-    g_game.physics.arcade.collide(player, platforms);
-
-    g_connectionManager.sendProto('PlayerState', {
-        'id' : g_playerId,
-        'acc' : new Vector2({'x': player.body.acceleration.x, 'y': player.body.acceleration.y}),
-        'vel' : new Vector2({'x': player.body.velocity.x, 'y': player.body.velocity.y}),
-        'pos' : new Vector2({'x': player.body.position.x, 'y': player.body.position.y}),
-        'time' : g_game.time.now,
-    });
-
 }

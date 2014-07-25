@@ -15,6 +15,7 @@ type GameManager struct {
 	playerIdToGame map[uint32]*Game
 
 	playerState chan swarm.PlayerState
+	playerLeft  chan uint32
 
 	gameService GameService
 }
@@ -28,6 +29,51 @@ type Player struct {
 type Game struct {
 	state   *GameState
 	players []*Player
+}
+
+func (mgr *GameManager) removePlayerFromGame(playerId uint32) {
+
+	log.Printf("[GM] removing player: %d", playerId)
+
+	// check that the player exists
+	_, playerExists := mgr.playerIdToGame[playerId]
+	if !playerExists {
+		return
+	}
+
+	game := mgr.playerIdToGame[playerId]
+	gameState := game.state
+
+	// remove player from player maps
+	delete(mgr.players, playerId)
+	delete(mgr.playerIdToGame, playerId)
+
+	// remove player from game state
+	for i, e := range game.players {
+		if e.state.id == playerId {
+			// player found, so delete it
+			game.players = append(game.players[:i], game.players[i+1:]...)
+			break
+		}
+	}
+
+	for i, e := range gameState.players {
+		if e.id == playerId {
+			gameState.players = append(gameState.players[:i], gameState.players[i+1:]...)
+			break
+		}
+	}
+
+	log.Printf("[GM] removed player: %d", playerId)
+
+	// delete the game if this was the last player
+	if len(gameState.players) == 0 {
+		gameId := gameState.gameId
+		delete(mgr.games, gameId)
+		log.Printf("[GM] ended game: %d", gameId)
+
+	}
+
 }
 
 func (mgr *GameManager) addPlayerToGame(c *chan *GameState) (
@@ -50,6 +96,8 @@ func (mgr *GameManager) addPlayerToGame(c *chan *GameState) (
 		game = &Game{state: gameState}
 		mgr.games[mgr.nextGameId] = game
 		mgr.nextGameId++
+
+		log.Printf("[GM] created game: %d", id)
 	}
 
 	// add the player to game, and the playestate to gamestate
@@ -62,14 +110,20 @@ func (mgr *GameManager) addPlayerToGame(c *chan *GameState) (
 	mgr.playerIdToGame[playerId] = game
 	mgr.players[playerId] = playerState
 
+	log.Printf("[GM] added player: %d", playerId)
+
 	return
 }
 
 func (mgr *GameManager) run() {
 	log.Println("[GM] run")
 
+	mgr.nextGameId = 1
+	mgr.nextPlayerId = 1
+
 	mgr.gameService = GameService{make(chan *CreateGameRequest), nil, nil}
 	mgr.playerState = make(chan swarm.PlayerState)
+	mgr.playerLeft = make(chan uint32)
 	mgr.games = make(map[uint32]*Game)
 	mgr.players = make(map[uint32]*PlayerState)
 	mgr.playerIdToGame = make(map[uint32]*Game)
@@ -91,6 +145,10 @@ func (mgr *GameManager) run() {
 				playerState.id,
 				gameState.gameId,
 				players}
+			break
+
+		case playerId := <-mgr.playerLeft:
+			mgr.removePlayerFromGame(playerId)
 			break
 
 		case s := <-mgr.playerState:
