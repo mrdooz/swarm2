@@ -236,42 +236,37 @@ function init(url) {
     g_connectionManager = new ConnectionManager();
 
     g_connectionManager.addMethodHandler('EnterGame', function(header, body) { 
-        console.log(header, body);
+        console.log('** ENTER GAME', body)
+        g_gameId = body.gameId
+        g_playerId = body.playerId
         g_game = new Phaser.Game(1800, 600, Phaser.AUTO, '', { 
                     preload: preload,
                     create: function() { 
-                        g_gameId = body.gameId;
-                        g_playerId = body.playerId; 
                         create(body.players);
                     },
                     update: update });
-    })
+    });
 
     g_connectionManager.addMethodHandler('GameState', function(header, body) { 
         _.each(body.players, function(v, k, l) {
 
             if (!(v.id in g_players)) {
-                createPlayer(v.id, false);
+                createPlayer(v.id, v.id == g_playerId);
+                console.log('[GameState] Added new player', v, g_players)
             }
 
             if (v.id != g_playerId) {
-                player = g_players[v.id];
-                player.acceleration.x = v.acc.x;
-                player.acceleration.y = v.acc.y;
-
-                player.velocity.x = v.vel.x;
-                player.velocity.y = v.vel.y;
-
+                var player = g_players[v.id];
                 player.position.x = v.pos.x;
                 player.position.y = v.pos.y;
             }
         })
-    })
+    });
 
     g_connectionManager.addMethodHandler('PingRequest', function(header, body) { 
-//        console.log(header, body); });    
         g_connectionManager.sendProtoResponse('Ping', header.token, {})
     })
+    
     g_connectionManager.connect(url);
 }
 
@@ -288,20 +283,24 @@ function preload() {
 }
 
 function createPlayer(id, local) {
+
+    console.log('[createPlayer]: ', id, local)
     // The player and its settings
     var player = g_game.add.sprite(32, g_game.world.height - 450, 'dude');
  
-    //  We need to enable physics on the player
-    g_game.physics.arcade.enable(player);
- 
-    //  Player physics properties. Give the little guy a slight bounce.
-    player.body.bounce.y = 0.2;
-    player.body.gravity.y = 300;
-    player.body.collideWorldBounds = true;
- 
-    //  Our two animations, walking left and right.
-    player.animations.add('left', [0, 1, 2, 3], 10, true);
-    player.animations.add('right', [5, 6, 7, 8], 10, true);
+    if (local) {
+        //  We need to enable physics on the player
+        g_game.physics.arcade.enable(player);
+     
+        //  Player physics properties. Give the little guy a slight bounce.
+        player.body.bounce.y = 0.2;
+        player.body.gravity.y = 300;
+        player.body.collideWorldBounds = true;
+     
+        //  Our two animations, walking left and right.
+        player.animations.add('left', [0, 1, 2, 3], 10, true);
+        player.animations.add('right', [5, 6, 7, 8], 10, true);        
+    }
 
     g_players[id] = player;
 }
@@ -336,12 +335,6 @@ function create(players) {
     ledge = platforms.create(-150, 250, 'ground');
  
     ledge.body.immovable = true;
-
-    // create a sprite for each players
-    _.each(players, function(v, k, l) {
-        createPlayer(k, v == g_playerId);
-    })
-
 
     // The player and its settings
     // player = g_game.add.sprite(32, g_game.world.height - 450, 'dude');

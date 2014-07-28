@@ -110,7 +110,7 @@ func (mgr *GameManager) addPlayerToGame(c *chan *GameState) (
 	mgr.playerIdToGame[playerId] = game
 	mgr.players[playerId] = playerState
 
-	log.Printf("[GM] added player: %d", playerId)
+	log.Printf("[GM] added player: %d to game: %d", playerId, gameState.gameId)
 
 	return
 }

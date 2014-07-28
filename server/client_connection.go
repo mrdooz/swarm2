@@ -131,12 +131,12 @@ func (client *ClientConnection) run() {
 			client.sendProtoMessageRequest(&e, makeHash("swarm.EnterGame"))
 			break
 
-		case <-time.After(10 * time.Second):
-			client.sendProtoMessageRequest(&swarm.PingRequest{}, makeHash("swarm.PingRequest"))
-			break
-
 		case gameState := <-client.gameService.gameState:
 			client.sendProtoMessageRequest(gameState.toProtocol(), makeHash("swarm.GameState"))
+			break
+
+		case <-time.After(10 * time.Second):
+			client.sendProtoMessageRequest(&swarm.PingRequest{}, makeHash("swarm.PingRequest"))
 			break
 
 		case <-client.disconnected:
