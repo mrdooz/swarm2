@@ -12,6 +12,10 @@ var g_players = {}
 var g_playerId = -1
 var g_gameId;
 
+var g_preloadDone = false;
+var g_createDone = false;
+var g_lastSend = 0;
+
 function ConnectionManager()
 {
     this.websocket = null;
@@ -250,6 +254,10 @@ function init(url) {
     g_connectionManager.addMethodHandler('GameState', function(header, body) { 
         _.each(body.players, function(v, k, l) {
 
+            // ignore updates if the game isn't created yet
+            if (!g_createDone)
+                return;
+
             if (!(v.id in g_players)) {
                 createPlayer(v.id, v.id == g_playerId);
                 console.log('[GameState] Added new player', v, g_players)
@@ -276,10 +284,12 @@ function disconnect() {
 
 function preload() {
 
+    g_preloadDone = false;
     g_game.load.image('sky', 'assets/sky.png');
     g_game.load.image('ground', 'assets/platform.png');
     g_game.load.image('star', 'assets/star.png');
     g_game.load.spritesheet('dude', 'assets/dude.png', 32, 48);
+    g_preloadDone = true;
 }
 
 function createPlayer(id, local) {
@@ -289,6 +299,15 @@ function createPlayer(id, local) {
     var player = g_game.add.sprite(32, g_game.world.height - 450, 'dude');
  
     if (local) {
+
+        if (!g_preloadDone) {
+            console.log('** CREATE PLAYER BEFORE PRELOAD');
+        }
+
+        if (!g_createDone) {
+            console.log('** CREATE PLAYER BEFORE GAME CREATE');
+        }
+
         //  We need to enable physics on the player
         g_game.physics.arcade.enable(player);
      
@@ -306,6 +325,8 @@ function createPlayer(id, local) {
 }
 
 function create(players) {
+    g_createDone = false;
+
     //  We're going to be using physics, so enable the Arcade Physics system
     g_game.physics.startSystem(Phaser.Physics.ARCADE);
  
@@ -335,21 +356,6 @@ function create(players) {
     ledge = platforms.create(-150, 250, 'ground');
  
     ledge.body.immovable = true;
-
-    // The player and its settings
-    // player = g_game.add.sprite(32, g_game.world.height - 450, 'dude');
- 
-    // //  We need to enable physics on the player
-    // g_game.physics.arcade.enable(player);
- 
-    // //  Player physics properties. Give the little guy a slight bounce.
-    // player.body.bounce.y = 0.2;
-    // player.body.gravity.y = 300;
-    // player.body.collideWorldBounds = true;
- 
-    // //  Our two animations, walking left and right.
-    // player.animations.add('left', [0, 1, 2, 3], 10, true);
-    // player.animations.add('right', [5, 6, 7, 8], 10, true);
 
     stars = g_game.add.group();
 
@@ -409,14 +415,20 @@ function update() {
         //  Collide the player and the stars with the platforms
         g_game.physics.arcade.collide(player, platforms);
 
-        g_connectionManager.sendProto('PlayerState', {
-            'id' : g_playerId,
-            'acc' : new Vector2({'x': player.body.acceleration.x, 'y': player.body.acceleration.y}),
-            'vel' : new Vector2({'x': player.body.velocity.x, 'y': player.body.velocity.y}),
-            'pos' : new Vector2({'x': player.body.position.x, 'y': player.body.position.y}),
-            'time' : g_game.time.now,
-        });
+        var now = g_game.time.now;
+        if (now - g_lastSend > 250) {
+            g_connectionManager.sendProto('PlayerState', {
+                'id' : g_playerId,
+                'acc' : new Vector2({'x': player.body.acceleration.x, 'y': player.body.acceleration.y}),
+                'vel' : new Vector2({'x': player.body.velocity.x, 'y': player.body.velocity.y}),
+                'pos' : new Vector2({'x': player.body.position.x, 'y': player.body.position.y}),
+                'time' : g_game.time.now,
+            });
+            g_lastSend = now;
+        }
+
     }   
     
     g_game.physics.arcade.collide(stars, platforms);
+    g_createDone = true;
 }
