@@ -3,11 +3,10 @@ var ByteBuffer  = ProtoBuf.ByteBuffer;
 var g_builder;
 var Vector2;
 
-var g_clientId;
-var g_connectionManager;
+var g_clientId = -1;
+var g_connectionManager = null;
 
-var g_game;
-
+var g_game = null;
 var g_players = {}
 var g_playerId = -1
 var g_gameId;
@@ -15,6 +14,20 @@ var g_gameId;
 var g_preloadDone = false;
 var g_createDone = false;
 var g_lastSend = 0;
+
+function reset() {
+    g_clientId = -1;
+    g_connectionManager = null;
+    g_game = null;
+
+    g_players = {};
+    g_playerId = -1;
+    g_gameId = -1;
+
+    g_preloadDone = false;
+    g_createDone = false;
+    g_lastSend = 0;
+}
 
 function ConnectionManager()
 {
@@ -235,6 +248,7 @@ function createConnectionManager()
 }
 
 function init(url) {
+    reset();
     g_builder           = ProtoBuf.loadProtoFile("protocol/swarm.proto");
     Vector2             = g_builder.build("swarm.Vector2");
     g_connectionManager = new ConnectionManager();
@@ -288,6 +302,7 @@ function preload() {
     g_game.load.image('sky', 'assets/sky.png');
     g_game.load.image('ground', 'assets/platform.png');
     g_game.load.image('star', 'assets/star.png');
+    g_game.load.image('firstaid', 'assets/firstaid.png');
     g_game.load.spritesheet('dude', 'assets/dude.png', 32, 48);
     g_preloadDone = true;
 }
@@ -313,7 +328,7 @@ function createPlayer(id, local) {
      
         //  Player physics properties. Give the little guy a slight bounce.
         player.body.bounce.y = 0.2;
-        player.body.gravity.y = 300;
+//        player.body.gravity.y = 300;
         player.body.collideWorldBounds = true;
      
         //  Our two animations, walking left and right.
@@ -324,6 +339,65 @@ function createPlayer(id, local) {
     g_players[id] = player;
 }
 
+g_level1 = {
+    width : 10,
+    height : 10,
+    data : [
+        'xxxxxxxxxx',
+        'x  1     x',
+        'x   2    x',
+        'x        x',
+        'x        x',
+        'x        x',
+        'x        x',
+        'x        x',
+        'x        x',
+        'xxxxxxxxxx'
+    ],
+};
+
+g_buttons = []
+
+function collision1(player, obj) {
+    console.log('collision: ', player, obj)
+ }
+
+function collision2(player, obj) {
+    console.log('collision: ', player, obj)
+    obj.kill()
+ }
+
+function createLevel(game, level) {
+
+    platforms = game.add.group();
+    platforms.enableBody = true;
+
+    buttons = game.add.group();
+    buttons.enableBody = true;
+
+    var w = level.width;
+    var h = level.height;
+
+    var blockSize = 30;
+
+    _.each(level.data, function(cur, y, arr) {
+        _.each(cur, function(elem, x, row) {
+            if (elem == 'x') {
+                var block = platforms.create(blockSize*x, blockSize*y, 'star');
+                block.body.immovable = true;
+
+           } else if (elem == '1') {
+                var block = buttons.create(blockSize*x, blockSize*y, 'firstaid');
+                g_buttons.push({obj: block, col: collision1});
+
+           } else if (elem == '2') {
+                var block = buttons.create(blockSize*x, blockSize*y, 'firstaid');
+                g_buttons.push({obj: block, col: collision2});
+           }
+        })
+    })
+}
+
 function create(players) {
     g_createDone = false;
 
@@ -332,47 +406,49 @@ function create(players) {
  
     //  A simple background for our game
     g_game.add.sprite(0, 0, 'sky');
- 
-    //  The platforms group contains the ground and the 2 ledges we can jump on
-    platforms = g_game.add.group();
- 
-    //  We will enable physics for any object that is created in this group
-    platforms.enableBody = true;
- 
-    // Here we create the ground.
-    var ground = platforms.create(0, g_game.world.height - 64, 'ground');
- 
-    //  Scale it to fit the width of the game (the original sprite is 400x32 in size)
-    ground.scale.setTo(2, 2);
- 
-    //  This stops it from falling away when you jump on it
-    ground.body.immovable = true;
- 
-    //  Now let's create two ledges
-    var ledge = platforms.create(400, 400, 'ground');
- 
-    ledge.body.immovable = true;
- 
-    ledge = platforms.create(-150, 250, 'ground');
- 
-    ledge.body.immovable = true;
 
-    stars = g_game.add.group();
+    createLevel(g_game, g_level1);
+ 
+    // //  The platforms group contains the ground and the 2 ledges we can jump on
+    // platforms = g_game.add.group();
+ 
+    // //  We will enable physics for any object that is created in this group
+    // platforms.enableBody = true;
 
-    stars.enableBody = true;
+    // // Here we create the ground.
+    // var ground = platforms.create(0, g_game.world.height - 64, 'ground');
+ 
+    // //  Scale it to fit the width of the game (the original sprite is 400x32 in size)
+    // ground.scale.setTo(2, 2);
+ 
+    // //  This stops it from falling away when you jump on it
+    // ground.body.immovable = true;
+ 
+    // //  Now let's create two ledges
+    // var ledge = platforms.create(400, 400, 'ground');
+ 
+    // ledge.body.immovable = true;
+ 
+    // ledge = platforms.create(-150, 250, 'ground');
+ 
+    // ledge.body.immovable = true;
 
-    //  Here we'll create 12 of them evenly spaced apart
-    for (var i = 0; i < 12; i++)
-    {
-        //  Create a star inside of the 'stars' group
-        var star = stars.create(i * 70, 0, 'star');
+    // stars = g_game.add.group();
 
-        //  Let gravity do its thing
-        star.body.gravity.y = 20;
+    // stars.enableBody = true;
 
-        //  This just gives each star a slightly random bounce value
-        star.body.bounce.y = 0.7 + Math.random() * 0.2;
-    }
+    // //  Here we'll create 12 of them evenly spaced apart
+    // for (var i = 0; i < 12; i++)
+    // {
+    //     //  Create a star inside of the 'stars' group
+    //     var star = stars.create(i * 70, 0, 'star');
+
+    //     //  Let gravity do its thing
+    //     star.body.gravity.y = 20;
+
+    //     //  This just gives each star a slightly random bounce value
+    //     star.body.bounce.y = 0.7 + Math.random() * 0.2;
+    // }
 
     cursors = g_game.input.keyboard.createCursorKeys();
 }
@@ -383,35 +459,38 @@ function update() {
         // update the local player with keyboard input
         var player = g_players[g_playerId];
 
-        //  Reset the players velocity (movement)
         player.body.velocity.x *= 0.98;
+        player.body.velocity.y *= 0.98;
         player.body.acceleration.x = 0;
+        player.body.acceleration.y = 0;
 
-        if (cursors.left.isDown)
-        {
-            //  Move to the left
+        var moving = false;
+        if (cursors.left.isDown) {
             player.body.acceleration.x = -150;
             player.animations.play('left');
-        }
-        else if (cursors.right.isDown)
-        {
-            //  Move to the right
+            moving = true;
+
+        } else if (cursors.right.isDown) {
             player.body.acceleration.x = 150;
             player.animations.play('right');
+            moving = true;
         }
-        else
-        {
+
+        if (cursors.up.isDown) {
+            player.body.acceleration.y = -150;
+            moving = true;
+
+        } else if (cursors.down.isDown) {
+            player.body.acceleration.y = 150;
+            moving = true;
+        }
+
+        if (!moving) {
             //  Stand still
             player.animations.stop();
             player.frame = 4;
         }
         
-        //  Allow the player to jump if they are touching the ground.
-        if (cursors.up.isDown && player.body.touching.down)
-        {
-            player.body.acceleration.y = -350;
-        }
-
         //  Collide the player and the stars with the platforms
         g_game.physics.arcade.collide(player, platforms);
 
@@ -427,8 +506,11 @@ function update() {
             g_lastSend = now;
         }
 
+        _.each(g_buttons, function(cur, idx, arr) {
+            g_game.physics.arcade.overlap(player, cur.obj, cur.col, null, this);
+        })
     }   
     
-    g_game.physics.arcade.collide(stars, platforms);
+//    g_game.physics.arcade.collide(stars, platforms);
     g_createDone = true;
 }
