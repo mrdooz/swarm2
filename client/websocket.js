@@ -15,6 +15,8 @@ var g_preloadDone = false;
 var g_createDone = false;
 var g_lastSend = 0;
 
+var g_collisionItem = null;
+
 function reset() {
     g_clientId = -1;
     g_connectionManager = null;
@@ -27,6 +29,8 @@ function reset() {
     g_preloadDone = false;
     g_createDone = false;
     g_lastSend = 0;
+
+    g_collisionItem = null;
 }
 
 function ConnectionManager()
@@ -359,12 +363,13 @@ g_level1 = {
 g_buttons = []
 
 function collision1(player, obj) {
-    console.log('collision: ', player, obj)
+//    console.log('collision: ', player, obj)
  }
 
 function collision2(player, obj) {
-    console.log('collision: ', player, obj)
-    obj.kill()
+    g_collisionItem = obj;
+//    console.log('collision: ', player, obj)
+//    obj.kill()
  }
 
 function createLevel(game, level) {
@@ -409,51 +414,23 @@ function create(players) {
 
     createLevel(g_game, g_level1);
  
-    // //  The platforms group contains the ground and the 2 ledges we can jump on
-    // platforms = g_game.add.group();
- 
-    // //  We will enable physics for any object that is created in this group
-    // platforms.enableBody = true;
+    var keyboard = g_game.input.keyboard;
+    cursors = keyboard.createCursorKeys();
+    keyboard.addKeyCapture(Phaser.Keyboard.SPACEBAR);
+    var space = keyboard.addKey(Phaser.Keyboard.SPACEBAR);
+    space.onUp.add(onSpace, g_players);
+}
 
-    // // Here we create the ground.
-    // var ground = platforms.create(0, g_game.world.height - 64, 'ground');
- 
-    // //  Scale it to fit the width of the game (the original sprite is 400x32 in size)
-    // ground.scale.setTo(2, 2);
- 
-    // //  This stops it from falling away when you jump on it
-    // ground.body.immovable = true;
- 
-    // //  Now let's create two ledges
-    // var ledge = platforms.create(400, 400, 'ground');
- 
-    // ledge.body.immovable = true;
- 
-    // ledge = platforms.create(-150, 250, 'ground');
- 
-    // ledge.body.immovable = true;
-
-    // stars = g_game.add.group();
-
-    // stars.enableBody = true;
-
-    // //  Here we'll create 12 of them evenly spaced apart
-    // for (var i = 0; i < 12; i++)
-    // {
-    //     //  Create a star inside of the 'stars' group
-    //     var star = stars.create(i * 70, 0, 'star');
-
-    //     //  Let gravity do its thing
-    //     star.body.gravity.y = 20;
-
-    //     //  This just gives each star a slightly random bounce value
-    //     star.body.bounce.y = 0.7 + Math.random() * 0.2;
-    // }
-
-    cursors = g_game.input.keyboard.createCursorKeys();
+function onSpace() {
+    // check if the player should activate any item
+    if (g_collisionItem) {
+        console.log('activate item');
+    }
 }
 
 function update() {
+
+    g_collisionItem = null;
 
     if (g_playerId != -1 && (g_playerId in g_players)) {
         // update the local player with keyboard input
